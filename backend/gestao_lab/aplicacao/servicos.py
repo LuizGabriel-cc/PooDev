@@ -70,17 +70,86 @@ class ServicoCadastro:
         self._senhas = senhas
         self._autenticacao = autenticacao
 
-    def _exigir_chefe(self, tx: UnidadeTrabalho, token: str) -> Usuario:
+    def _exigir_chefe(
+        self,
+        tx: UnidadeTrabalho,
+        token: str,
+        *,
+        para_remocao: bool = False
+) -> Usuario:
+
         ator = self._autenticacao.identificar_na_transacao(tx, token)
+
         if ator is None:
             raise AcessoNegado("Entre novamente para continuar.")
+
+        if para_remocao and not isinstance(ator, ChefeLaboratorio):
+            raise AcessoNegado(
+                "Somente o Chefe do laboratório pode remover cadastros."
+            )
+
         ator.exigir_permissao_cadastro()
+
         return ator
 
     def listar(self, token: str) -> list[Usuario]:
         with self._transacao() as tx:
             ator = self._exigir_chefe(tx, token)
             return tx.usuarios.listar(ator.laboratorio_id)
+
+    def consultar(self, token: str, usuario_id: int) -> Usuario:
+        with self._transacao() as tx:
+            ator = self._exigir_chefe(
+                tx, token, para_remocao=True
+            )
+
+            alvo = tx.usuarios.buscar_por_id(usuario_id)
+
+            if alvo is None or alvo.laboratorio_id != ator.laboratorio_id:
+                raise DadosInvalidos(
+                "Cadastro não encontrado neste laboratório."
+                )
+
+            ator.exigir_permissao_remocao(alvo)
+
+            return alvo
+
+
+    def remover(self, token: str, usuario_id: int) -> None:
+        with self._transacao() as tx:
+            ator = self._exigir_chefe(
+                tx, token, para_remocao=True
+            )
+
+            alvo = tx.usuarios.buscar_por_id(usuario_id)
+
+            if alvo is None or alvo.laboratorio_id != ator.laboratorio_id:
+                raise DadosInvalidos(
+                    "Cadastro não encontrado neste laboratório."
+                )
+
+            ator.exigir_permissao_remocao(alvo)
+
+            if isinstance(alvo, Professor):
+                if tx.usuarios.possui_orientandos_ativos(alvo.id):
+                    raise DadosInvalidos(
+                        "Este professor ainda orienta alunos ativos "
+                        "e não pode ter o cadastro removido."
+                    )
+
+            tx.contexto(
+                ator.id,
+                "Desativação de cadastro pelo Chefe de Laboratório"
+            )
+
+            if not tx.usuarios.desativar(
+                alvo.id, ator.laboratorio_id
+            ):
+                raise DadosInvalidos(
+                    "Este cadastro já está inativo."
+                )
+
+            tx.sessoes.revogar_do_usuario(alvo.id)
 
     def cadastrar(self, token: str, perfil: Perfil, dados: DadosCadastro) -> Usuario:
         with self._transacao() as tx:

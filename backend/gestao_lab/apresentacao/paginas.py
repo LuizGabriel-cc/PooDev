@@ -58,12 +58,62 @@ def perfil(usuario, csrf):
 
 def usuarios(lista, ator, csrf, mensagem=""):
     linhas = []
+
     for u in lista:
-        detalhe = f'Matrícula: {u.matricula}' if isinstance(u, Aluno) else u.programa_pos
-        linhas.append(f'<tr><td>{escape(u.nome)}</td><td>{escape(u.email)}</td><td>{ROTULOS[u.perfil]}</td><td>{escape(detalhe)}</td><td>{"Ativo" if u.ativo else "Inativo"}</td></tr>')
-    corpo = aviso(mensagem) + f'''<p>Contas vinculadas ao seu laboratório.</p>
-<div class="acoes"><a class="botao" href="/cadastros/aluno">Cadastrar aluno</a><a class="botao secundario" href="/cadastros/professor">Cadastrar professor</a></div>
-<div class="tabela"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Dados acadêmicos</th><th>Situação</th></tr></thead><tbody>{''.join(linhas)}</tbody></table></div>'''
+        detalhe = (
+            f'Matrícula: {u.matricula}'
+            if isinstance(u, Aluno)
+            else u.programa_pos
+        )
+
+        acao = (
+            f'<a class="botao secundario" '
+            f'href="/usuarios/remover?id={u.id}">'
+            f'Remover cadastro</a>'
+            if u.ativo and not isinstance(u, ChefeLaboratorio)
+            else '—'
+        )
+
+        linhas.append(
+            f'<tr>'
+            f'<td>{escape(u.nome)}</td>'
+            f'<td>{escape(u.email)}</td>'
+            f'<td>{ROTULOS[u.perfil]}</td>'
+            f'<td>{escape(detalhe)}</td>'
+            f'<td>{"Ativo" if u.ativo else "Inativo"}</td>'
+            f'<td>{acao}</td>'
+            f'</tr>'
+        )
+
+    corpo = aviso(mensagem) + f'''
+    <p>Contas vinculadas ao seu laboratório.
+    A remoção desativa o acesso e preserva o histórico.</p>
+
+    <div class="acoes">
+        <a class="botao" href="/cadastros/aluno">
+            Cadastrar aluno
+        </a>
+        <a class="botao secundario" href="/cadastros/professor">
+            Cadastrar professor
+        </a>
+    </div>
+
+    <div class="tabela">
+        <table>
+            <thead>
+                <tr>
+                    <th>Nome</th>
+                    <th>E-mail</th>
+                    <th>Perfil</th>
+                    <th>Dados acadêmicos</th>
+                    <th>Situação</th>
+                    <th>Ação</th>
+                </tr>
+            </thead>
+            <tbody>{''.join(linhas)}</tbody>
+        </table>
+    </div>'''
+
     return layout("Usuários", corpo, ator, csrf)
 
 
@@ -90,3 +140,45 @@ def cadastro(perfil_cadastro, ator, csrf, orientadores, dados=None, mensagem="")
     corpo += '</div><div class="acoes"><button>Cadastrar</button><a href="/usuarios">Voltar</a></div></form></section>'
     titulo = "Cadastrar aluno" if perfil_cadastro == Perfil.ALUNO else "Cadastrar professor"
     return layout(titulo, corpo, ator, csrf)
+
+
+def confirmar_remocao(alvo, ator, csrf):
+    nome = escape(alvo.nome)
+    email = escape(alvo.email)
+
+    conteudo = f'''
+    <section class="cartao estreito">
+        <p>
+            Deseja remover o cadastro de
+            <strong>{nome}</strong> ({email})?
+        </p>
+
+        <p>
+            O acesso será desativado e as sessões abertas
+            serão encerradas. Os registros históricos
+            serão preservados.
+        </p>
+
+        <form method="post" action="/usuarios/remover">
+            {oculto(csrf)}
+
+            <input
+                type="hidden"
+                name="usuario_id"
+                value="{alvo.id}"
+            >
+
+            <div class="acoes">
+                <button>Confirmar remoção</button>
+                <a href="/usuarios">Cancelar</a>
+            </div>
+        </form>
+    </section>
+    '''
+
+    return layout(
+        "Confirmar remoção de cadastro",
+        conteudo,
+        ator,
+        csrf
+    )

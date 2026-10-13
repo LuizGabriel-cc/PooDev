@@ -74,6 +74,33 @@ class UsuariosPostgres(RepositorioUsuarios):
     def alterar_senha(self, usuario_id, senha_hash):
         self._conexao.execute("UPDATE gestao_lab.usuario SET senha_hash = %s WHERE id = %s", (senha_hash, usuario_id))
 
+    def desativar(self, usuario_id, laboratorio_id):
+        resultado = self._conexao.execute("""
+            UPDATE gestao_lab.usuario
+            SET ativo = false
+            WHERE id = %s
+            AND laboratorio_id = %s
+            AND ativo = true
+            RETURNING id
+        """, (usuario_id, laboratorio_id))
+
+        return resultado.fetchone() is not None
+
+
+def possui_orientandos_ativos(self, professor_id):
+    resultado = self._conexao.execute("""
+        SELECT EXISTS (
+            SELECT 1
+            FROM gestao_lab.aluno a
+            JOIN gestao_lab.usuario u
+                ON u.id = a.usuario_id
+            WHERE a.orientador_usuario_id = %s
+              AND u.ativo = true
+        ) AS possui
+    """, (professor_id,))
+
+    return bool(resultado.fetchone()["possui"])
+
 
 class LaboratoriosPostgres(RepositorioLaboratorios):
     def __init__(self, conexao):

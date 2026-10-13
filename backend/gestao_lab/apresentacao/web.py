@@ -103,6 +103,22 @@ class AplicacaoWeb:
             raise DadosInvalidos("O formulário contém campos duplicados.")
         return {k: v[0] for k, v in campos.items()}
 
+    @staticmethod
+    def _identificador(valor):
+        try:
+            numero = int(valor)
+        except (TypeError, ValueError) as erro:
+            raise DadosInvalidos(
+                "Selecione um cadastro válido."
+            ) from erro
+
+        if numero <= 0:
+            raise DadosInvalidos(
+                "Selecione um cadastro válido."
+            )
+
+        return numero
+
     def _rotear(self, environ):
         porta = self._configuracao.porta
         host = environ.get("HTTP_HOST", "")
@@ -152,7 +168,14 @@ class AplicacaoWeb:
             return self._redirecionar("/", [self._cookie("lab_sessao", novo_token), self._cookie("lab_form", "", True)])
         # Arquivos ausentes, como favicon.ico, não devem abrir outro formulário.
         # O redirecionamento anterior trocava o cookie da página de login aberta.
-        if rota not in {"/", "/usuarios", "/cadastros/aluno", "/cadastros/professor", "/sair"}:
+        if rota not in {
+            "/",
+            "/usuarios",
+            "/usuarios/remover",
+            "/cadastros/aluno",
+            "/cadastros/professor",
+            "/sair"
+        }:
             return Resposta(paginas.layout("Página não encontrada", '<p><a href="/">Voltar ao início</a></p>'), 404)
         usuario = self._autenticacao.identificar(token)
         if usuario is None:
@@ -169,10 +192,58 @@ class AplicacaoWeb:
             return self._redirecionar("/entrar", [self._cookie("lab_sessao", "", True)])
         if rota == "/" and metodo == "GET":
             return Resposta(paginas.perfil(usuario, csrf))
+
+
+        
         if rota == "/usuarios" and metodo == "GET":
             lista = self._cadastro.listar(token)
-            mensagem = "Usuário cadastrado." if environ.get("QUERY_STRING") == "cadastro=ok" else ""
-            return Resposta(paginas.usuarios(lista, usuario, csrf, mensagem))
+
+            query = environ.get("QUERY_STRING", "")
+
+            if query == "cadastro=ok":
+                mensagem = "Usuário cadastrado."
+            elif query == "remocao=ok":
+                mensagem = "Cadastro removido (conta desativada)."
+            else:
+                mensagem = ""
+
+            return Resposta(
+                paginas.usuarios(lista, usuario, csrf, mensagem)
+            )
+
+        if rota == "/usuarios/remover":
+
+            if metodo == "GET":
+                parametros = parse_qs(
+                    environ.get("QUERY_STRING", "")
+                )
+
+                identificador = self._identificador(
+                    (parametros.get("id") or [None])[0]
+                )
+
+                alvo = self._cadastro.consultar(
+                    token, identificador
+                )
+
+                return Resposta(
+                    paginas.confirmar_remocao(
+                        alvo, usuario, csrf
+                    )
+                )
+
+            identificador = self._identificador(
+                campos.get("usuario_id")
+            )
+
+            self._cadastro.remover(token, identificador)
+
+            return self._redirecionar(
+                "/usuarios?remocao=ok"
+            )
+
+
+        
         if rota in {"/cadastros/aluno", "/cadastros/professor"}:
             lista = self._cadastro.listar(token)
             orientadores = [u for u in lista if isinstance(u, Professor) and u.ativo]

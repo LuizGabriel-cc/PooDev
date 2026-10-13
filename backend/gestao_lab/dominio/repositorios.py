@@ -36,6 +36,15 @@ class RepositorioUsuarios(ABC):
     @abstractmethod
     def alterar_senha(self, usuario_id: int, senha_hash: str) -> None: ...
 
+    @abstractmethod
+    def desativar(
+        self, usuario_id: int, laboratorio_id: int
+    ) -> bool: ...
+
+    @abstractmethod
+    def possui_orientandos_ativos(
+        self, professor_id: int
+    ) -> bool: ...
 
 class RepositorioLaboratorios(ABC):
     @abstractmethod
