@@ -56,6 +56,11 @@ class Usuario(ABC):
     def exigir_permissao_cadastro(self) -> None:
         raise AcessoNegado("Somente o Chefe do laboratório pode cadastrar usuários.")
 
+    def exigir_permissao_remocao(self, alvo: "Usuario") -> None:
+        raise AcessoNegado(
+            "Somente o Chefe do laboratório pode remover cadastros."
+        )
+
 
 @dataclass(frozen=True, kw_only=True)
 class Professor(Usuario):
@@ -82,6 +87,23 @@ class ChefeLaboratorio(Professor):
     def exigir_permissao_cadastro(self) -> None:
         if not self.ativo:
             raise AcessoNegado("O Chefe está inativo.")
+
+    def exigir_permissao_remocao(self, alvo: Usuario) -> None:
+        if not self.ativo:
+            raise AcessoNegado("O Chefe está inativo.")
+
+        if self.laboratorio_id != alvo.laboratorio_id:
+            raise AcessoNegado(
+                "Só é permitido remover cadastros do próprio laboratório."
+            )
+
+        if isinstance(alvo, ChefeLaboratorio):
+            raise AcessoNegado(
+                "Não é permitido remover o cadastro de um Chefe de Laboratório."
+            )
+
+        if not alvo.ativo:
+            raise DadosInvalidos("Este cadastro já está inativo.")
 
 
 @dataclass(frozen=True, kw_only=True)
