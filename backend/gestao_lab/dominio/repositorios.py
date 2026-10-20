@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
 from typing import Self
-
+from .laboratorios import Laboratorio
 from .usuarios import Usuario
 from .salas import Sala
 from .bancadas import Bancada
@@ -55,6 +55,19 @@ class RepositorioLaboratorios(ABC):
 
     @abstractmethod
     def criar(self, nome: str, localizacao: str, chefe_id: int) -> int: ...
+
+    @abstractmethod
+    def buscar_por_id(
+        self, laboratorio_id: int
+    ) -> Laboratorio | None:
+        """Busca um laboratório pelo identificador."""
+        ...
+
+    @abstractmethod
+    def listar_ativos(self) -> list[Laboratorio]:
+        """Lista os laboratórios ativos."""
+        ...
+
 
 
 

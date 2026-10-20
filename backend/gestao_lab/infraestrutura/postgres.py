@@ -4,7 +4,7 @@ from typing import Self
 
 import psycopg
 from psycopg.rows import dict_row
-
+from ..dominio.laboratorios import Laboratorio
 from ..dominio.erros import CadastroDuplicado, DadosInvalidos, FalhaPersistencia
 from ..dominio.repositorios import RepositorioLaboratorios, RepositorioRecursos, RepositorioSessoes, RepositorioUsuarios, Sessao, UnidadeTrabalho
 from ..dominio.usuarios import Aluno, ChefeLaboratorio, Professor, Usuario
@@ -90,19 +90,19 @@ class UsuariosPostgres(RepositorioUsuarios):
         return resultado.fetchone() is not None
 
 
-def possui_orientandos_ativos(self, professor_id):
-    resultado = self._conexao.execute("""
-        SELECT EXISTS (
-            SELECT 1
-            FROM gestao_lab.aluno a
-            JOIN gestao_lab.usuario u
-                ON u.id = a.usuario_id
-            WHERE a.orientador_usuario_id = %s
-              AND u.ativo = true
-        ) AS possui
-    """, (professor_id,))
+    def possui_orientandos_ativos(self, professor_id):
+        resultado = self._conexao.execute("""
+            SELECT EXISTS (
+                SELECT 1
+                FROM gestao_lab.aluno a
+                JOIN gestao_lab.usuario u
+                    ON u.id = a.usuario_id
+                WHERE a.orientador_usuario_id = %s
+                    AND u.ativo = true
+            ) AS possui
+        """, (professor_id,))
 
-    return bool(resultado.fetchone()["possui"])
+        return bool(resultado.fetchone()["possui"])
 
 
 class LaboratoriosPostgres(RepositorioLaboratorios):
@@ -118,6 +118,57 @@ class LaboratoriosPostgres(RepositorioLaboratorios):
             INSERT INTO gestao_lab.laboratorio(nome, localizacao, chefe_usuario_id)
             VALUES (%s, %s, %s) RETURNING id
         """, (nome, localizacao, chefe_id)).fetchone()["id"]
+
+    
+    def buscar_por_id(
+        self, laboratorio_id: int
+    ) -> Laboratorio | None:
+
+        resultado = self._conexao.execute("""
+            SELECT
+                id,
+                nome,
+                localizacao,
+                chefe_usuario_id,
+                ativo,
+                duracao_maxima_reserva,
+                max_reservas_simultaneas,
+                dias_alerta_validade
+            FROM gestao_lab.laboratorio
+            WHERE id = %s
+        """, (laboratorio_id,))
+
+        linha = resultado.fetchone()
+
+        if linha is None:
+            return None
+
+        return Laboratorio(**linha)
+
+    def listar_ativos(self) -> list[Laboratorio]:
+
+        resultado = self._conexao.execute("""
+            SELECT
+                id,
+                nome,
+                localizacao,
+                chefe_usuario_id,
+                ativo,
+                duracao_maxima_reserva,
+                max_reservas_simultaneas,
+                dias_alerta_validade
+            FROM gestao_lab.laboratorio
+            WHERE ativo = true
+            ORDER BY nome, id
+        """)
+
+        linhas = resultado.fetchall()
+
+        return [
+            Laboratorio(**linha)
+            for linha in linhas
+        ]
+
 
 
     

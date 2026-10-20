@@ -413,6 +413,27 @@ class ServicoRecursos:
                 equipamento
             )
 
+    
+    def listar(self, token: str):
+        with self._transacao() as tx:
+            chefe = self._exigir_chefe(tx, token)
+
+            salas = tx.recursos.listar_salas(
+                chefe.laboratorio_id
+            )
+
+            bancadas = [
+                bancada
+                for sala in salas
+                for bancada in sala.bancadas
+            ]
+
+            equipamentos = tx.recursos.listar_equipamentos(
+                chefe.laboratorio_id
+            )
+
+            return salas, bancadas, equipamentos
+
 
 
 

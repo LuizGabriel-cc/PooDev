@@ -3,7 +3,7 @@ from getpass import getpass
 from wsgiref.simple_server import make_server, WSGIRequestHandler
 
 from .aplicacao.seguranca import ProtecaoSenha
-from .aplicacao.servicos import DadosCadastro, ServicoAutenticacao, ServicoCadastro, ServicoConfiguracaoInicial
+from .aplicacao.servicos import DadosCadastro, ServicoAutenticacao, ServicoCadastro, ServicoConfiguracaoInicial, ServicoRecursos
 from .apresentacao.web import AplicacaoWeb
 from .dominio.erros import DadosInvalidos, ErroAplicacao
 from .infraestrutura.configuracao import Configuracao
@@ -53,7 +53,9 @@ def main():
         else:
             autenticacao = ServicoAutenticacao(transacao, senhas, config.horas_sessao)
             cadastro = ServicoCadastro(transacao, senhas, autenticacao)
-            app = AplicacaoWeb(autenticacao, cadastro, config)
+            recursos = ServicoRecursos(transacao, autenticacao)
+            app = AplicacaoWeb(autenticacao, cadastro, config, recursos=recursos)
+
             # O servidor de referência atende a demonstração local; a interface é WSGI.
             with make_server("127.0.0.1", config.porta, app, handler_class=AtendimentoLocal) as servidor:
                 print(f"Abra http://127.0.0.1:{config.porta} — Ctrl+C para encerrar.")

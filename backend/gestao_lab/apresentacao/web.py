@@ -10,7 +10,7 @@ from . import paginas
 from .csrf import ProtecaoCSRF
 from ..aplicacao.servicos import DadosCadastro
 from ..dominio.erros import AcessoNegado, CredenciaisInvalidas, DadosInvalidos, ErroAplicacao, FalhaPersistencia
-from ..dominio.usuarios import Perfil, Professor
+from ..dominio.usuarios import Perfil, Professor, ChefeLaboratorio
 
 
 @dataclass
@@ -38,9 +38,10 @@ class LimiteLogin:
 
 
 class AplicacaoWeb:
-    def __init__(self, autenticacao, cadastro, configuracao):
+    def __init__(self, autenticacao, cadastro, configuracao, recursos=None):
         self._autenticacao = autenticacao
         self._cadastro = cadastro
+        self._recursos = recursos
         self._configuracao = configuracao
         self._csrf = ProtecaoCSRF(configuracao.segredo_csrf)
         self._limite = LimiteLogin()
@@ -168,15 +169,27 @@ class AplicacaoWeb:
             return self._redirecionar("/", [self._cookie("lab_sessao", novo_token), self._cookie("lab_form", "", True)])
         # Arquivos ausentes, como favicon.ico, não devem abrir outro formulário.
         # O redirecionamento anterior trocava o cookie da página de login aberta.
+        
         if rota not in {
             "/",
             "/usuarios",
             "/usuarios/remover",
             "/cadastros/aluno",
             "/cadastros/professor",
-            "/sair"
+            "/recursos",
+            "/cadastros/sala",
+            "/cadastros/bancada",
+            "/cadastros/equipamento",
+            "/sair",
         }:
-            return Resposta(paginas.layout("Página não encontrada", '<p><a href="/">Voltar ao início</a></p>'), 404)
+            return Resposta(
+                paginas.layout(
+                    "Página não encontrada",
+                    '<p><a href="/">Voltar ao início</a></p>'
+                ),
+                404
+            )
+
         usuario = self._autenticacao.identificar(token)
         if usuario is None:
             return self._redirecionar("/entrar", [self._cookie("lab_sessao", "", True)])
@@ -269,4 +282,154 @@ class AplicacaoWeb:
                 except ErroAplicacao as erro:
                     mensagem = str(erro)
             return Resposta(paginas.cadastro(perfil, usuario, csrf, orientadores, campos if metodo == "POST" else None, mensagem), 400 if mensagem else 200)
+
+        if rota in {
+            "/recursos",
+            "/cadastros/sala",
+            "/cadastros/bancada",
+            "/cadastros/equipamento",
+        }:
+            if not isinstance(usuario, ChefeLaboratorio):
+                raise AcessoNegado(
+                    "Somente o Chefe pode gerenciar recursos."
+                )
+
+            if self._recursos is None:
+                raise FalhaPersistencia(
+                    "Serviço de recursos indisponível."
+                )
+
+            if rota == "/recursos":
+                if metodo != "GET":
+                    return Resposta(
+                        "Método não permitido.",
+                        405,
+                        [("Allow", "GET")]
+                    )
+
+                salas, bancadas, equipamentos = (
+                    self._recursos.listar(token)
+                )
+
+                mensagem = (
+                    "Recurso cadastrado com sucesso."
+                    if environ.get("QUERY_STRING") == "cadastro=ok"
+                    else ""
+                )
+
+                return Resposta(
+                    paginas.painel_recursos(
+                        usuario, csrf,
+                        salas, bancadas, equipamentos,
+                        mensagem
+                    )
+                )
+
+            mensagem = ""
+
+            if metodo == "POST":
+                try:
+                    if rota == "/cadastros/sala":
+                        self._recursos.cadastrar_sala(
+                            token,
+                            nome=campos.get("nome", ""),
+                            identificacao=campos.get(
+                                "identificacao", ""
+                            ),
+                            localizacao=campos.get(
+                                "localizacao", ""
+                            ),
+                            capacidade=self._identificador(
+                                campos.get("capacidade")
+                            )
+                        )
+
+                    elif rota == "/cadastros/bancada":
+                        self._recursos.cadastrar_bancada(
+                            token,
+                            nome=campos.get("nome", ""),
+                            numero_identificacao=campos.get(
+                                "numero_identificacao", ""
+                            ),
+                            sala_id=self._identificador(
+                                campos.get("sala_id")
+                            )
+                        )
+
+                    elif rota == "/cadastros/equipamento":
+                        bancada_id = (
+                            self._identificador(
+                                campos["bancada_id"]
+                            )
+                            if campos.get("bancada_id")
+                            else None
+                        )
+
+                        sala_id = (
+                            self._identificador(
+                                campos["sala_direta_id"]
+                            )
+                            if campos.get("sala_direta_id")
+                            else None
+                        )
+
+                        self._recursos.cadastrar_equipamento(
+                            token,
+                            nome=campos.get("nome", ""),
+                            numero_patrimonio=campos.get(
+                                "numero_patrimonio", ""
+                            ),
+                            complemento_local=campos.get(
+                                "complemento_local", ""
+                            ),
+                            bancada_id=bancada_id,
+                            sala_direta_id=sala_id,
+                            foto_uri=campos.get("foto_uri") or None,
+                            observacao=campos.get(
+                                "observacao"
+                            ) or None
+                        )
+
+                    return self._redirecionar(
+                        "/recursos?cadastro=ok"
+                    )
+
+                except (AcessoNegado, FalhaPersistencia):
+                    raise
+
+                except ErroAplicacao as erro:
+                    mensagem = str(erro)
+
+            salas, bancadas, equipamentos = (
+                self._recursos.listar(token)
+            )
+
+            dados = campos if metodo == "POST" else None
+            status = 400 if mensagem else 200
+
+            if rota == "/cadastros/sala":
+                return Resposta(
+                    paginas.formulario_sala(
+                        usuario, csrf, dados, mensagem
+                    ),
+                    status
+                )
+
+            if rota == "/cadastros/bancada":
+                return Resposta(
+                    paginas.formulario_bancada(
+                        usuario, csrf, salas, dados, mensagem
+                    ),
+                    status
+                )
+
+            if rota == "/cadastros/equipamento":
+                return Resposta(
+                    paginas.formulario_equipamento(
+                        usuario, csrf,
+                        salas, bancadas, dados, mensagem
+                    ),
+                    status
+                )
+
         return Resposta(paginas.layout("Página não encontrada", '<p><a href="/">Voltar ao início</a></p>', usuario, csrf), 404)
