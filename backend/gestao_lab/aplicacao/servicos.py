@@ -1,6 +1,9 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from ..dominio.salas import Sala
+from ..dominio.bancadas import Bancada
+from ..dominio.equipamentos import Equipamento
 import secrets
 
 from .seguranca import ProtecaoSenha, TokensSessao
@@ -166,6 +169,273 @@ class ServicoCadastro:
             usuario = replace(usuario, senha_hash=self._senhas.gerar_hash(dados.senha))
             tx.contexto(ator.id, f"Cadastro de {usuario.perfil.lower()}")
             return tx.usuarios.salvar(usuario)
+
+
+
+class ServicoRecursos:
+    """Coordena os cadastros de recursos do laboratório."""
+
+    def __init__(
+        self,
+        transacao: FabricaTransacao,
+        autenticacao: ServicoAutenticacao
+    ):
+        self._transacao = transacao
+        self._autenticacao = autenticacao
+
+    def _exigir_chefe(
+        self, tx: UnidadeTrabalho, token: str
+    ) -> ChefeLaboratorio:
+
+        ator = self._autenticacao.identificar_na_transacao(
+            tx, token
+        )
+
+        if ator is None:
+            raise AcessoNegado(
+                "Entre novamente para continuar."
+            )
+
+        if not isinstance(ator, ChefeLaboratorio):
+            raise AcessoNegado(
+                "Somente o Chefe do laboratório "
+                "pode cadastrar recursos."
+            )
+
+        ator.exigir_permissao_cadastro()
+        return ator
+
+    @staticmethod
+    def _validar_responsavel(
+        tx: UnidadeTrabalho,
+        responsavel_id: int,
+        laboratorio_id: int
+    ) -> None:
+
+        if type(responsavel_id) is not int or responsavel_id <= 0:
+            raise DadosInvalidos(
+                "Selecione um responsável válido."
+            )
+
+        responsavel = tx.usuarios.buscar_por_id(
+            responsavel_id
+        )
+
+        if (
+            not isinstance(responsavel, Professor)
+            or not responsavel.ativo
+            or responsavel.laboratorio_id != laboratorio_id
+        ):
+            raise DadosInvalidos(
+                "O responsável deve ser um Professor "
+                "ativo do mesmo laboratório."
+            )
+
+    @staticmethod
+    def _buscar_sala(
+        tx: UnidadeTrabalho,
+        sala_id: int,
+        laboratorio_id: int
+    ) -> Sala:
+
+        if type(sala_id) is not int or sala_id <= 0:
+            raise DadosInvalidos("Selecione uma sala válida.")
+
+        sala = tx.recursos.buscar_sala(sala_id)
+
+        if sala is None or sala.laboratorio_id != laboratorio_id:
+            raise DadosInvalidos(
+                "Sala não encontrada neste laboratório."
+            )
+
+        return sala
+
+    def cadastrar_sala(
+        self,
+        token: str,
+        *,
+        nome: str,
+        identificacao: str,
+        localizacao: str,
+        capacidade: int,
+        responsavel_id: int | None = None
+    ) -> Sala:
+
+        with self._transacao() as tx:
+            chefe = self._exigir_chefe(tx, token)
+
+            responsavel = (
+                chefe.id
+                if responsavel_id is None
+                else responsavel_id
+            )
+
+            self._validar_responsavel(
+                tx, responsavel, chefe.laboratorio_id
+            )
+
+            sala = Sala(
+                nome=nome,
+                identificacao=identificacao,
+                localizacao=localizacao,
+                capacidade=capacidade,
+                laboratorio_id=chefe.laboratorio_id,
+                responsavel_usuario_id=responsavel
+            )
+
+            tx.contexto(chefe.id, "Cadastro de sala")
+
+            return tx.recursos.salvar_sala(sala)
+
+    def cadastrar_bancada(
+        self,
+        token: str,
+        *,
+        nome: str,
+        numero_identificacao: str,
+        sala_id: int,
+        responsavel_id: int | None = None
+    ) -> Bancada:
+
+        with self._transacao() as tx:
+            chefe = self._exigir_chefe(tx, token)
+
+            sala = self._buscar_sala(
+                tx, sala_id, chefe.laboratorio_id
+            )
+
+            responsavel = (
+                chefe.id
+                if responsavel_id is None
+                else responsavel_id
+            )
+
+            self._validar_responsavel(
+                tx, responsavel, chefe.laboratorio_id
+            )
+
+            bancada = Bancada(
+                nome=nome,
+                numero_identificacao=numero_identificacao,
+                sala_id=sala_id,
+                localizacao=sala.localizacao,
+                laboratorio_id=chefe.laboratorio_id,
+                responsavel_usuario_id=responsavel
+            )
+
+            tx.contexto(chefe.id, "Cadastro de bancada")
+
+            return tx.recursos.salvar_bancada(bancada)
+
+    def cadastrar_equipamento(
+        self,
+        token: str,
+        *,
+        nome: str,
+        numero_patrimonio: str,
+        complemento_local: str,
+        bancada_id: int | None = None,
+        sala_direta_id: int | None = None,
+        foto_uri: str | None = None,
+        observacao: str | None = None,
+        responsavel_id: int | None = None
+    ) -> Equipamento:
+
+        with self._transacao() as tx:
+            chefe = self._exigir_chefe(tx, token)
+
+            if (
+                (bancada_id is None)
+                == (sala_direta_id is None)
+            ):
+                raise DadosInvalidos(
+                    "Informe uma bancada ou uma sala, "
+                    "mas não ambas."
+                )
+
+            if bancada_id is not None:
+                if type(bancada_id) is not int or bancada_id <= 0:
+                    raise DadosInvalidos(
+                        "Selecione uma bancada válida."
+                    )
+
+                bancada = tx.recursos.buscar_bancada(
+                    bancada_id
+                )
+
+                if (
+                    bancada is None
+                    or bancada.laboratorio_id != chefe.laboratorio_id
+                ):
+                    raise DadosInvalidos(
+                        "Bancada não encontrada neste laboratório."
+                    )
+
+                sala = self._buscar_sala(
+                    tx,
+                    bancada.sala_id,
+                    chefe.laboratorio_id
+                )
+
+            else:
+                sala = self._buscar_sala(
+                    tx,
+                    sala_direta_id,
+                    chefe.laboratorio_id
+                )
+
+            responsavel = (
+                chefe.id
+                if responsavel_id is None
+                else responsavel_id
+            )
+
+            self._validar_responsavel(
+                tx, responsavel, chefe.laboratorio_id
+            )
+
+            equipamento = Equipamento(
+                nome=nome,
+                numero_patrimonio=numero_patrimonio,
+                localizacao=sala.localizacao,
+                complemento_local=complemento_local,
+                bancada_id=bancada_id,
+                sala_direta_id=sala_direta_id,
+                foto_uri=foto_uri,
+                observacao=observacao,
+                laboratorio_id=chefe.laboratorio_id,
+                responsavel_usuario_id=responsavel
+            )
+
+            tx.contexto(chefe.id, "Cadastro de equipamento")
+
+            return tx.recursos.salvar_equipamento(
+                equipamento
+            )
+
+    
+    def listar(self, token: str):
+        with self._transacao() as tx:
+            chefe = self._exigir_chefe(tx, token)
+
+            salas = tx.recursos.listar_salas(
+                chefe.laboratorio_id
+            )
+
+            bancadas = [
+                bancada
+                for sala in salas
+                for bancada in sala.bancadas
+            ]
+
+            equipamentos = tx.recursos.listar_equipamentos(
+                chefe.laboratorio_id
+            )
+
+            return salas, bancadas, equipamentos
+
+
+
 
 
 class ServicoConfiguracaoInicial:

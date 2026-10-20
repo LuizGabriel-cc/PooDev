@@ -15,8 +15,15 @@ def layout(titulo, conteudo, usuario=None, csrf=""):
     nav = ''
     if usuario:
         links = '<a href="/">Meu perfil</a>'
+      
         if isinstance(usuario, ChefeLaboratorio):
-            links += '<a href="/usuarios">Usuários</a><a href="/cadastros/aluno">Cadastrar aluno</a><a href="/cadastros/professor">Cadastrar professor</a>'
+            links += (
+                '<a href="/usuarios">Usuários</a>'
+                '<a href="/recursos">Recursos</a>'
+                '<a href="/cadastros/aluno">Cadastrar aluno</a>'
+                '<a href="/cadastros/professor">Cadastrar professor</a>'
+            )
+
         nav = f'<nav>{links}<form method="post" action="/sair">{oculto(csrf)}<button class="secundario">Sair</button></form></nav>'
     return f'''<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -182,3 +189,265 @@ def confirmar_remocao(alvo, ator, csrf):
         ator,
         csrf
     )
+
+
+def _selecao_recurso(
+    nome, rotulo, opcoes, selecionado="", obrigatorio=True
+):
+    itens = ['<option value="">Selecione...</option>']
+
+    for identificador, descricao in opcoes:
+        valor = str(identificador)
+        marcado = (
+            ' selected'
+            if str(selecionado) == valor
+            else ''
+        )
+
+        itens.append(
+            f'<option value="{escape(valor, quote=True)}"{marcado}>'
+            f'{escape(str(descricao))}</option>'
+        )
+
+    atributo = ' required' if obrigatorio else ''
+
+    return (
+        f'<label>{escape(rotulo)}'
+        f'<select name="{escape(nome, quote=True)}"{atributo}>'
+        f'{"".join(itens)}</select></label>'
+    )
+
+
+
+def _pagina_cadastro_recurso(
+    titulo, rota, campos_html, ator, csrf,
+    mensagem="", instrucao=""
+):
+    corpo = aviso(mensagem, True)
+    corpo += '<section class="cartao">'
+
+    corpo += (
+        '<p>O recurso será vinculado ao laboratório '
+        'do Chefe autenticado.</p>'
+    )
+
+    if instrucao:
+        corpo += f'<p>{escape(instrucao)}</p>'
+
+    corpo += (
+        f'<form method="post" action="{rota}">'
+        f'{oculto(csrf)}'
+        f'<div class="campos">{campos_html}</div>'
+        '<div class="acoes">'
+        '<button type="submit">Cadastrar</button>'
+        '<a href="/recursos">Voltar</a>'
+        '</div></form></section>'
+    )
+
+    return layout(titulo, corpo, ator, csrf)
+
+
+
+def formulario_sala(ator, csrf, dados=None, mensagem=""):
+    dados = dados or {}
+
+    campos = (
+        campo(
+            "nome", "Nome da sala",
+            dados.get("nome", "")
+        )
+        + campo(
+            "identificacao", "Identificação",
+            dados.get("identificacao", ""), limite=80
+        )
+        + campo(
+            "localizacao", "Localização",
+            dados.get("localizacao", ""), limite=200
+        )
+        + campo(
+            "capacidade", "Capacidade (pessoas)",
+            dados.get("capacidade", ""),
+            tipo="number", limite=9
+        )
+    )
+
+    return _pagina_cadastro_recurso(
+        "Cadastrar sala",
+        "/cadastros/sala",
+        campos, ator, csrf, mensagem
+    )
+
+
+
+def formulario_bancada(
+    ator, csrf, salas, dados=None, mensagem=""
+):
+    dados = dados or {}
+
+    opcoes = [
+        (s.id, f"{s.identificacao} — {s.nome}")
+        for s in salas if s.id is not None
+    ]
+
+    campos = (
+        campo(
+            "nome", "Nome da bancada",
+            dados.get("nome", "")
+        )
+        + campo(
+            "numero_identificacao",
+            "Identificação da bancada",
+            dados.get("numero_identificacao", ""),
+            limite=80
+        )
+        + _selecao_recurso(
+            "sala_id",
+            "Sala",
+            opcoes,
+            dados.get("sala_id", "")
+        )
+    )
+
+    return _pagina_cadastro_recurso(
+        "Cadastrar bancada",
+        "/cadastros/bancada",
+        campos, ator, csrf, mensagem
+    )
+
+
+
+
+def formulario_equipamento(
+    ator, csrf, salas, bancadas, dados=None, mensagem=""
+):
+    dados = dados or {}
+
+    opcoes_salas = [
+        (s.id, f"{s.identificacao} — {s.nome}")
+        for s in salas if s.id is not None
+    ]
+
+    opcoes_bancadas = [
+        (b.id, f"{b.numero_identificacao} — {b.nome}")
+        for b in bancadas if b.id is not None
+    ]
+
+    campos = (
+        campo(
+            "nome", "Nome do equipamento",
+            dados.get("nome", "")
+        )
+        + campo(
+            "numero_patrimonio", "Número de patrimônio",
+            dados.get("numero_patrimonio", ""), limite=80
+        )
+        + campo(
+            "complemento_local", "Complemento do local",
+            dados.get("complemento_local", ""), limite=200
+        )
+        + _selecao_recurso(
+            "bancada_id", "Bancada (opcional)",
+            opcoes_bancadas, dados.get("bancada_id", ""),
+            False
+        )
+        + _selecao_recurso(
+            "sala_direta_id", "Sala direta (opcional)",
+            opcoes_salas, dados.get("sala_direta_id", ""),
+            False
+        )
+        + campo(
+            "foto_uri", "Endereço da foto (opcional)",
+            dados.get("foto_uri", ""),
+            obrigatorio=False, limite=500
+        )
+        + campo(
+            "observacao", "Observação (opcional)",
+            dados.get("observacao", ""),
+            obrigatorio=False, limite=500
+        )
+    )
+
+    return _pagina_cadastro_recurso(
+        "Cadastrar equipamento",
+        "/cadastros/equipamento",
+        campos, ator, csrf, mensagem,
+        instrucao=(
+            "Selecione uma bancada OU uma sala direta, "
+            "nunca ambas."
+        )
+    )
+
+
+
+def _lista_visual_recursos(itens):
+    if not itens:
+        return "<p>Nenhum recurso cadastrado.</p>"
+
+    linhas = "".join(
+        f"<li>{escape(str(item))}</li>"
+        for item in itens
+    )
+
+    return f"<ul>{linhas}</ul>"
+
+
+def painel_recursos(
+    ator, csrf, salas, bancadas, equipamentos, mensagem=""
+):
+    descricoes_salas = [
+        f"{s.identificacao} — {s.nome} "
+        f"(capacidade: {s.capacidade})"
+        for s in salas
+    ]
+
+    descricoes_bancadas = [
+        f"{b.numero_identificacao} — {b.nome}"
+        for b in bancadas
+    ]
+
+    descricoes_equipamentos = [
+        f"{e.numero_patrimonio} — {e.nome}"
+        for e in equipamentos
+    ]
+
+    corpo = aviso(mensagem)
+
+    corpo += '''
+    <section class="cartao">
+        <h2>Gerenciar recursos</h2>
+        <p>Cadastre e consulte os recursos do laboratório.</p>
+
+        <div class="acoes">
+            <a class="botao" href="/cadastros/sala">
+                Cadastrar sala
+            </a>
+            <a class="botao secundario" href="/cadastros/bancada">
+                Cadastrar bancada
+            </a>
+            <a class="botao secundario" href="/cadastros/equipamento">
+                Cadastrar equipamento
+            </a>
+        </div>
+    </section>
+    '''
+
+    corpo += (
+        '<section class="cartao"><h2>Salas</h2>'
+        + _lista_visual_recursos(descricoes_salas)
+        + '</section>'
+    )
+
+    corpo += (
+        '<section class="cartao"><h2>Bancadas</h2>'
+        + _lista_visual_recursos(descricoes_bancadas)
+        + '</section>'
+    )
+
+    corpo += (
+        '<section class="cartao"><h2>Equipamentos</h2>'
+        + _lista_visual_recursos(descricoes_equipamentos)
+        + '</section>'
+    )
+
+    return layout("Recursos do laboratório", corpo, ator, csrf)
+

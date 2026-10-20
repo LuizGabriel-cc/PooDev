@@ -3,8 +3,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
 from typing import Self
-
+from .laboratorios import Laboratorio
 from .usuarios import Usuario
+from .salas import Sala
+from .bancadas import Bancada
+from .equipamentos import Equipamento
 
 
 @dataclass(frozen=True)
@@ -53,6 +56,69 @@ class RepositorioLaboratorios(ABC):
     @abstractmethod
     def criar(self, nome: str, localizacao: str, chefe_id: int) -> int: ...
 
+    @abstractmethod
+    def buscar_por_id(
+        self, laboratorio_id: int
+    ) -> Laboratorio | None:
+        """Busca um laboratório pelo identificador."""
+        ...
+
+    @abstractmethod
+    def listar_ativos(self) -> list[Laboratorio]:
+        """Lista os laboratórios ativos."""
+        ...
+
+
+
+
+class RepositorioRecursos(ABC):
+    """Contrato para persistência de salas, bancadas e equipamentos."""
+
+    @abstractmethod
+    def salvar_sala(self, sala: Sala) -> Sala:
+        """Salva uma sala e devolve o objeto com seu ID."""
+        ...
+
+    @abstractmethod
+    def salvar_bancada(self, bancada: Bancada) -> Bancada:
+        """Salva uma bancada vinculada a uma sala."""
+        ...
+
+    @abstractmethod
+    def salvar_equipamento(
+        self, equipamento: Equipamento
+    ) -> Equipamento:
+        """Salva um equipamento com patrimônio único."""
+        ...
+
+    @abstractmethod
+    def buscar_sala(self, sala_id: int) -> Sala | None:
+        """Busca uma sala pelo identificador."""
+        ...
+
+    @abstractmethod
+    def buscar_bancada(self, bancada_id: int) -> Bancada | None:
+        """Busca uma bancada pelo identificador."""
+        ...
+
+    @abstractmethod
+    def listar_salas(self, laboratorio_id: int) -> list[Sala]:
+        """Lista as salas de um laboratório."""
+        ...
+
+    @abstractmethod
+    def listar_bancadas(self, sala_id: int) -> list[Bancada]:
+        """Lista as bancadas pertencentes a uma sala."""
+        ...
+
+    @abstractmethod
+    def listar_equipamentos(
+        self, laboratorio_id: int
+    ) -> list[Equipamento]:
+        """Lista os equipamentos de um laboratório."""
+        ...
+
+
 
 class RepositorioSessoes(ABC):
     @abstractmethod
@@ -73,6 +139,7 @@ class UnidadeTrabalho(ABC):
 
     usuarios: RepositorioUsuarios
     laboratorios: RepositorioLaboratorios
+    recursos: RepositorioRecursos
     sessoes: RepositorioSessoes
 
     @abstractmethod
