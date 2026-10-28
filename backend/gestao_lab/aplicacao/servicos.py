@@ -10,6 +10,8 @@ from .seguranca import ProtecaoSenha, TokensSessao
 from ..dominio.erros import AcessoNegado, CredenciaisInvalidas, DadosInvalidos
 from ..dominio.repositorios import UnidadeTrabalho
 from ..dominio.usuarios import Aluno, ChefeLaboratorio, Perfil, Professor, TipoAluno, Usuario, normalizar_email, texto_obrigatorio
+from ..dominio.reservas import Reserva
+from ..dominio.historico import HistoricoUso
 
 FabricaTransacao = Callable[[], UnidadeTrabalho]
 
@@ -413,6 +415,184 @@ class ServicoRecursos:
                 equipamento
             )
 
+
+    
+    @staticmethod
+    def _buscar_equipamento(
+        tx: UnidadeTrabalho,
+        equipamento_id: int,
+        laboratorio_id: int
+    ) -> Equipamento:
+
+        if (
+            type(equipamento_id) is not int
+            or equipamento_id <= 0
+        ):
+            raise DadosInvalidos(
+                "Selecione um equipamento válido."
+            )
+
+        equipamento = next(
+            (
+                e
+                for e in tx.recursos.listar_equipamentos(
+                    laboratorio_id
+                )
+                if e.id == equipamento_id
+            ),
+            None
+        )
+
+        if (
+            equipamento is None
+            or equipamento.laboratorio_id != laboratorio_id
+        ):
+            raise DadosInvalidos(
+                "Equipamento não encontrado neste laboratório."
+            )
+
+        return equipamento
+
+
+
+    
+    def vincular_equipamento(
+        self,
+        token: str,
+        *,
+        equipamento_id: int,
+        bancada_id: int,
+        complemento_local: str | None = None
+    ) -> Equipamento:
+
+        with self._transacao() as tx:
+
+            # 1. Verifica se o usuário é Chefe.
+            chefe = self._exigir_chefe(tx, token)
+
+            # 2. Localiza o equipamento.
+            equipamento = self._buscar_equipamento(
+                tx,
+                equipamento_id,
+                chefe.laboratorio_id
+            )
+
+            # 3. Valida o identificador da bancada.
+            if (
+                type(bancada_id) is not int
+                or bancada_id <= 0
+            ):
+                raise DadosInvalidos(
+                    "Selecione uma bancada válida."
+                )
+
+            # 4. Localiza a bancada.
+            bancada = tx.recursos.buscar_bancada(
+                bancada_id
+            )
+
+            if (
+                bancada is None
+                or bancada.laboratorio_id
+                != chefe.laboratorio_id
+            ):
+                raise DadosInvalidos(
+                    "Bancada não encontrada neste laboratório."
+                )
+
+            # 5. Aplica as regras do domínio.
+            atualizado = equipamento.vincular_a_bancada(
+                bancada,
+                complemento_local
+            )
+
+            # 6. Registra o contexto da operação.
+            tx.contexto(
+                chefe.id,
+                "Vínculo de equipamento com bancada"
+            )
+
+            # 7. Persiste a alteração no PostgreSQL.
+            tx.recursos.alterar_local_equipamento(
+                chefe.id,
+                atualizado
+            )
+
+            return atualizado
+
+
+    
+    def desvincular_equipamento(
+        self,
+        token: str,
+        *,
+        equipamento_id: int,
+        complemento_local: str | None = None
+    ) -> Equipamento:
+
+        with self._transacao() as tx:
+
+            # 1. Verifica se o usuário é Chefe.
+            chefe = self._exigir_chefe(tx, token)
+
+            # 2. Localiza o equipamento.
+            equipamento = self._buscar_equipamento(
+                tx,
+                equipamento_id,
+                chefe.laboratorio_id
+            )
+
+            # 3. Verifica se existe vínculo.
+            if equipamento.bancada_id is None:
+                raise DadosInvalidos(
+                    "Este equipamento não está vinculado "
+                    "a uma bancada."
+                )
+
+            # 4. Recupera a bancada atual.
+            bancada = tx.recursos.buscar_bancada(
+                equipamento.bancada_id
+            )
+
+            if (
+                bancada is None
+                or bancada.laboratorio_id
+                != chefe.laboratorio_id
+            ):
+                raise DadosInvalidos(
+                    "Bancada atual inválida neste laboratório."
+                )
+
+            # 5. Localiza a sala da bancada.
+            sala = self._buscar_sala(
+                tx,
+                bancada.sala_id,
+                chefe.laboratorio_id
+            )
+
+            # 6. Aplica as regras do domínio.
+            atualizado = equipamento.desvincular_da_bancada(
+                bancada,
+                sala,
+                complemento_local
+            )
+
+            # 7. Registra o contexto da operação.
+            tx.contexto(
+                chefe.id,
+                "Desvínculo de equipamento de bancada"
+            )
+
+            # 8. Persiste a alteração.
+            tx.recursos.alterar_local_equipamento(
+                chefe.id,
+                atualizado
+            )
+
+            return atualizado
+
+
+
     
     def listar(self, token: str):
         with self._transacao() as tx:
@@ -433,6 +613,236 @@ class ServicoRecursos:
             )
 
             return salas, bancadas, equipamentos
+
+
+
+class ServicoReservas:
+    """Coordena reservas autenticadas do laboratório."""
+
+    def __init__(
+        self,
+        transacao: FabricaTransacao,
+        autenticacao: ServicoAutenticacao
+    ):
+        self._transacao = transacao
+        self._autenticacao = autenticacao
+
+    def _identificar(
+        self,
+        tx: UnidadeTrabalho,
+        token: str
+    ):
+        # Identifica o usuário pela sessão atual.
+        ator = self._autenticacao.identificar_na_transacao(
+            tx, token
+        )
+
+        if ator is None or ator.id is None or not ator.ativo:
+            raise AcessoNegado(
+                "Entre novamente para continuar."
+            )
+
+        # Verifica se o laboratório está ativo.
+        laboratorio = tx.laboratorios.buscar_por_id(
+            ator.laboratorio_id
+        )
+
+        if laboratorio is None or not laboratorio.ativo:
+            raise AcessoNegado(
+                "Laboratório inativo ou inexistente."
+            )
+
+        return ator, laboratorio
+
+    @staticmethod
+
+
+    def _buscar_recurso(
+        tx: UnidadeTrabalho,
+        recurso_id: int,
+        laboratorio_id: int
+    ):
+        if type(recurso_id) is not int or recurso_id <= 0:
+            raise DadosInvalidos(
+                "Informe um recurso válido."
+            )
+
+        # Procura primeiro uma sala.
+        recurso = tx.recursos.buscar_sala(recurso_id)
+
+        # Se não encontrar, procura uma bancada.
+        if recurso is None:
+            recurso = tx.recursos.buscar_bancada(recurso_id)
+
+        # Finalmente, procura um equipamento.
+        if recurso is None:
+            recurso = next(
+                (
+                    equipamento
+                    for equipamento in
+                    tx.recursos.listar_equipamentos(laboratorio_id)
+                    if equipamento.id == recurso_id
+                ),
+                None
+            )
+
+        # Impede acesso a recursos de outro laboratório.
+        if (
+            recurso is None
+            or recurso.laboratorio_id != laboratorio_id
+        ):
+            raise DadosInvalidos(
+                "Recurso não encontrado neste laboratório."
+            )
+
+        return recurso
+
+
+    
+    def listar_recursos(self, token: str):
+        """Lista os recursos do laboratório do usuário autenticado."""
+
+        with self._transacao() as tx:
+            _, laboratorio = self._identificar(tx, token)
+
+            salas = tx.recursos.listar_salas(
+                laboratorio.id
+            )
+
+            bancadas = [
+                bancada
+                for sala in salas
+                for bancada in sala.bancadas
+            ]
+
+            equipamentos = tx.recursos.listar_equipamentos(
+                laboratorio.id
+            )
+
+            return salas, bancadas, equipamentos
+
+
+
+
+
+    def reservar(
+        self,
+        token: str,
+        *,
+        recurso_id: int,
+        inicio: datetime,
+        fim: datetime
+    ) -> int:
+
+        with self._transacao() as tx:
+            # 1. Identifica quem está reservando.
+            ator, laboratorio = self._identificar(
+                tx, token
+            )
+
+            # 2. Localiza o recurso solicitado.
+            recurso = self._buscar_recurso(
+                tx,
+                recurso_id,
+                laboratorio.id
+            )
+
+            # 3. Cria o objeto de domínio para validação.
+            reserva = Reserva(
+                usuario_id=ator.id,
+                laboratorio_id=laboratorio.id,
+                recurso=recurso,
+                inicio=inicio,
+                fim=fim
+            )
+
+            # 4. Verifica a duração máxima configurada.
+            if (
+                laboratorio.duracao_maxima_reserva is not None
+                and reserva.fim - reserva.inicio
+                > laboratorio.duracao_maxima_reserva
+            ):
+                raise DadosInvalidos(
+                    "A duração excede o limite do laboratório."
+                )
+
+            # 5. Registra o contexto da operação.
+            tx.contexto(
+                ator.id,
+                "Criação de reserva"
+            )
+
+            # 6. Solicita a gravação ao repositório.
+            return tx.reservas.criar(
+                ator.id,
+                recurso.id,
+                reserva.inicio,
+                reserva.fim
+            )
+
+
+
+    
+    def listar(self, token: str) -> list[dict]:
+        """Consulta reservas conforme as permissões do usuário."""
+
+        with self._transacao() as tx:
+            ator, laboratorio = self._identificar(
+                tx, token
+            )
+
+            eh_chefe = (
+                isinstance(ator, ChefeLaboratorio)
+                and ator.id == laboratorio.chefe_usuario_id
+            )
+
+            return tx.reservas.listar(
+                laboratorio.id,
+                ator.id,
+                eh_chefe
+            )
+
+
+
+
+    def cancelar(
+        self,
+        token: str,
+        *,
+        reserva_id: int,
+        motivo: str
+    ) -> None:
+
+        # 1. Valida os dados recebidos.
+        if type(reserva_id) is not int or reserva_id <= 0:
+            raise DadosInvalidos(
+                "Informe uma reserva válida."
+            )
+
+        if (
+            not isinstance(motivo, str)
+            or not motivo.strip()
+        ):
+            raise DadosInvalidos(
+                "Informe o motivo do cancelamento."
+            )
+
+        # 2. Identifica o usuário autenticado.
+        with self._transacao() as tx:
+            ator, _ = self._identificar(tx, token)
+
+            # 3. Registra o contexto da operação.
+            tx.contexto(
+                ator.id,
+                "Cancelamento de reserva"
+            )
+
+            # 4. Solicita o cancelamento ao PostgreSQL.
+            tx.reservas.cancelar(
+                ator.id,
+                reserva_id,
+                motivo.strip()
+            )
 
 
 
@@ -469,3 +879,237 @@ class ServicoConfiguracaoInicial:
             tx.contexto(None, "Redefinição de senha pelo operador local")
             tx.usuarios.alterar_senha(usuario.id, senha_hash)
             tx.sessoes.revogar_do_usuario(usuario.id)
+
+
+
+class ServicoHistoricoUso:
+    """Consulta o histórico respeitando as permissões."""
+
+    def __init__(
+        self,
+        transacao: FabricaTransacao,
+        autenticacao: ServicoAutenticacao
+    ):
+        self._transacao = transacao
+        self._autenticacao = autenticacao
+
+    def listar(
+        self,
+        token: str,
+        *,
+        usuario_id: int | None = None,
+        recurso_id: int | None = None,
+        desde: datetime | None = None,
+        ate: datetime | None = None
+    ) -> list[HistoricoUso]:
+
+        # 1. Valida os identificadores dos filtros.
+        for nome, valor in (
+            ("usuário", usuario_id),
+            ("recurso", recurso_id)
+        ):
+            if valor is not None and (
+                type(valor) is not int or valor <= 0
+            ):
+                raise DadosInvalidos(
+                    f"Identificador de {nome} inválido."
+                )
+
+        # 2. Valida os filtros de data e hora.
+        for data in (desde, ate):
+            if data is not None and (
+                not isinstance(data, datetime)
+                or data.tzinfo is None
+                or data.utcoffset() is None
+            ):
+                raise DadosInvalidos(
+                    "Informe datas com fuso horário."
+                )
+
+        if (
+            desde is not None
+            and ate is not None
+            and desde >= ate
+        ):
+            raise DadosInvalidos(
+                "O final do período deve ser posterior ao início."
+            )
+
+        with self._transacao() as tx:
+
+            # 3. Identifica o usuário autenticado.
+            ator = (
+                self._autenticacao.identificar_na_transacao(
+                    tx, token
+                )
+            )
+
+            if (
+                ator is None
+                or ator.id is None
+                or not ator.ativo
+            ):
+                raise AcessoNegado(
+                    "Entre novamente para continuar."
+                )
+
+            # 4. Verifica o laboratório.
+            laboratorio = tx.laboratorios.buscar_por_id(
+                ator.laboratorio_id
+            )
+
+            if (
+                laboratorio is None
+                or not laboratorio.ativo
+            ):
+                raise AcessoNegado(
+                    "Laboratório inativo ou inexistente."
+                )
+
+            # 5. Verifica se é o Chefe responsável.
+            eh_chefe = (
+                isinstance(ator, ChefeLaboratorio)
+                and ator.id == laboratorio.chefe_usuario_id
+            )
+
+            # 6. Impede a consulta de reservas alheias.
+            if (
+                not eh_chefe
+                and usuario_id is not None
+                and usuario_id != ator.id
+            ):
+                raise AcessoNegado(
+                    "Você só pode consultar o histórico "
+                    "das suas próprias reservas."
+                )
+
+            # 7. Encaminha a consulta ao repositório.
+            return tx.historico.listar(
+                laboratorio.id,
+                ator.id,
+                eh_chefe,
+                usuario_id=usuario_id,
+                recurso_id=recurso_id,
+                desde=desde,
+                ate=ate
+            )
+
+
+
+
+class ServicoLimitesReserva:
+    """Configuração de limites pelo Chefe de Laboratório."""
+
+    def __init__(
+        self,
+        transacao: FabricaTransacao,
+        autenticacao: ServicoAutenticacao
+    ):
+        self._transacao = transacao
+        self._autenticacao = autenticacao
+
+    def _exigir_chefe(
+        self,
+        tx: UnidadeTrabalho,
+        token: str
+    ):
+        ator = self._autenticacao.identificar_na_transacao(
+            tx, token
+        )
+
+        if (
+            ator is None
+            or not ator.ativo
+            or not isinstance(ator, ChefeLaboratorio)
+        ):
+            raise AcessoNegado(
+                "Somente o Chefe pode configurar os limites."
+            )
+
+        laboratorio = tx.laboratorios.buscar_por_id(
+            ator.laboratorio_id
+        )
+
+        if (
+            laboratorio is None
+            or not laboratorio.ativo
+            or laboratorio.chefe_usuario_id != ator.id
+        ):
+            raise AcessoNegado(
+                "Chefe não autorizado neste laboratório."
+            )
+
+        return ator, laboratorio
+
+    def consultar(self, token: str):
+        """Retorna os limites atuais para o Chefe."""
+
+        with self._transacao() as tx:
+            _, laboratorio = self._exigir_chefe(
+                tx, token
+            )
+
+            return laboratorio
+
+    def configurar(
+        self,
+        token: str,
+        *,
+        duracao_minutos: int | None,
+        quantidade: int | None
+    ):
+        """Valida e atualiza os limites de reserva."""
+
+        # Validação da duração.
+        if duracao_minutos is not None and (
+            type(duracao_minutos) is not int
+            or duracao_minutos <= 0
+        ):
+            raise DadosInvalidos(
+                "Informe uma duração positiva em minutos."
+            )
+
+        # Validação da quantidade.
+        if quantidade is not None and (
+            type(quantidade) is not int
+            or quantidade <= 0
+        ):
+            raise DadosInvalidos(
+                "Informe uma quantidade positiva."
+            )
+
+        # Converte minutos para timedelta.
+        try:
+            duracao = (
+                timedelta(minutes=duracao_minutos)
+                if duracao_minutos is not None
+                else None
+            )
+        except OverflowError as erro:
+            raise DadosInvalidos(
+                "A duração informada é muito grande."
+            ) from erro
+
+        with self._transacao() as tx:
+            ator, laboratorio = self._exigir_chefe(
+                tx, token
+            )
+
+            # Valida os limites no domínio.
+            atualizado = laboratorio.configurar_limites(
+                duracao,
+                quantidade
+            )
+
+            # Registra o responsável e o motivo da alteração.
+            tx.contexto(
+                ator.id,
+                "Configuração dos limites de reserva"
+            )
+
+            return tx.laboratorios.atualizar_limites(
+                laboratorio.id,
+                ator.id,
+                atualizado.duracao_maxima_reserva,
+                atualizado.max_reservas_simultaneas
+            )

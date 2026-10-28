@@ -8,6 +8,9 @@ from .apresentacao.web import AplicacaoWeb
 from .dominio.erros import DadosInvalidos, ErroAplicacao
 from .infraestrutura.configuracao import Configuracao
 from .infraestrutura.postgres import UnidadeTrabalhoPostgres
+from .aplicacao.servicos import ServicoReservas
+from .aplicacao.servicos import ServicoHistoricoUso
+from .aplicacao.servicos import ServicoLimitesReserva
 
 
 class AtendimentoLocal(WSGIRequestHandler):
@@ -54,7 +57,10 @@ def main():
             autenticacao = ServicoAutenticacao(transacao, senhas, config.horas_sessao)
             cadastro = ServicoCadastro(transacao, senhas, autenticacao)
             recursos = ServicoRecursos(transacao, autenticacao)
-            app = AplicacaoWeb(autenticacao, cadastro, config, recursos=recursos)
+            reservas = ServicoReservas(transacao, autenticacao)
+            historico = ServicoHistoricoUso(transacao, autenticacao)
+            limites = ServicoLimitesReserva(transacao, autenticacao)
+            app = AplicacaoWeb(autenticacao, cadastro, config, recursos=recursos, reservas=reservas, historico=historico, limites=limites)
 
             # O servidor de referência atende a demonstração local; a interface é WSGI.
             with make_server("127.0.0.1", config.porta, app, handler_class=AtendimentoLocal) as servidor:

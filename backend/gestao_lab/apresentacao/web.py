@@ -11,6 +11,7 @@ from .csrf import ProtecaoCSRF
 from ..aplicacao.servicos import DadosCadastro
 from ..dominio.erros import AcessoNegado, CredenciaisInvalidas, DadosInvalidos, ErroAplicacao, FalhaPersistencia
 from ..dominio.usuarios import Perfil, Professor, ChefeLaboratorio
+from datetime import date, datetime, timedelta, timezone
 
 
 @dataclass
@@ -38,13 +39,16 @@ class LimiteLogin:
 
 
 class AplicacaoWeb:
-    def __init__(self, autenticacao, cadastro, configuracao, recursos=None):
+    def __init__(self, autenticacao, cadastro, configuracao, recursos=None, reservas=None, historico=None, limites=None):
         self._autenticacao = autenticacao
         self._cadastro = cadastro
         self._recursos = recursos
+        self._reservas = reservas
         self._configuracao = configuracao
         self._csrf = ProtecaoCSRF(configuracao.segredo_csrf)
         self._limite = LimiteLogin()
+        self._historico = historico
+        self._limites = limites
 
     def __call__(self, environ, start_response):
         try:
@@ -120,6 +124,65 @@ class AplicacaoWeb:
 
         return numero
 
+
+    
+    @staticmethod
+    def _data_hora_reserva(valor):
+        try:
+            instante = datetime.strptime(
+                valor,
+                "%Y-%m-%dT%H:%M"
+            )
+        except (TypeError, ValueError) as erro:
+            raise DadosInvalidos(
+                "Informe data e horário válidos."
+            ) from erro
+
+        # Horário local de Brasília: UTC-03:00.
+        fuso_brasilia = timezone(
+            timedelta(hours=-3)
+        )
+
+        return instante.replace(
+            tzinfo=fuso_brasilia
+        )
+
+
+    
+    @staticmethod
+    def _data_filtro_historico(valor, fim=False):
+        if not valor:
+            return None
+
+        try:
+            dia = date.fromisoformat(valor)
+
+            fuso = timezone(
+                timedelta(hours=-3)
+            )
+
+            instante = datetime(
+                dia.year,
+                dia.month,
+                dia.day,
+                tzinfo=fuso
+            )
+
+            # O final selecionado é inclusivo no formulário.
+            # A consulta SQL utiliza limite superior exclusivo.
+            if fim:
+                instante += timedelta(days=1)
+
+            return instante
+
+        except (TypeError, ValueError, OverflowError) as erro:
+            raise DadosInvalidos(
+                "Informe uma data válida no filtro."
+            ) from erro
+
+
+
+
     def _rotear(self, environ):
         porta = self._configuracao.porta
         host = environ.get("HTTP_HOST", "")
@@ -180,6 +243,12 @@ class AplicacaoWeb:
             "/cadastros/sala",
             "/cadastros/bancada",
             "/cadastros/equipamento",
+            "/reservas/nova",
+            "/reservas",
+            "/reservas/cancelar",
+            "/historico",
+            "/limites-reserva",
+            "/recursos/vinculos",
             "/sair",
         }:
             return Resposta(
@@ -205,6 +274,455 @@ class AplicacaoWeb:
             return self._redirecionar("/entrar", [self._cookie("lab_sessao", "", True)])
         if rota == "/" and metodo == "GET":
             return Resposta(paginas.perfil(usuario, csrf))
+        if rota == "/reservas" and metodo == "GET":
+
+            if self._reservas is None:
+                raise FalhaPersistencia(
+                    "Serviço de reservas indisponível."
+                )
+
+            lista = self._reservas.listar(token)
+
+            mensagem = (
+                "Reserva cancelada com sucesso."
+                if environ.get("QUERY_STRING") == "cancelada=ok"
+                else ""
+            )
+
+            return Resposta(
+                paginas.pagina_reservas(
+                    usuario,
+                    csrf,
+                    lista,
+                    mensagem
+                )
+            )
+        if rota == "/reservas/cancelar":
+
+            if metodo != "POST":
+                return Resposta(
+                    "Método não permitido.",
+                    405,
+                    [("Allow", "POST")]
+                )
+
+            if self._reservas is None:
+                raise FalhaPersistencia(
+                    "Serviço de reservas indisponível."
+                )
+
+            try:
+                reserva_id = self._identificador(
+                    campos.get("reserva_id")
+                )
+
+                motivo = campos.get("motivo", "")
+
+                self._reservas.cancelar(
+                    token,
+                    reserva_id=reserva_id,
+                    motivo=motivo
+                )
+
+            except (AcessoNegado, FalhaPersistencia):
+                raise
+
+            except ErroAplicacao as erro:
+                lista = self._reservas.listar(token)
+
+                return Resposta(
+                    paginas.pagina_reservas(
+                        usuario,
+                        csrf,
+                        lista,
+                        str(erro),
+                        True
+                    ),
+                    400
+                )
+
+            return self._redirecionar(
+                "/reservas?cancelada=ok"
+            )
+        if rota == "/historico":
+
+            if metodo != "GET":
+                return Resposta(
+                    "Método não permitido.",
+                    405,
+                    [("Allow", "GET")]
+                )
+
+            if self._historico is None or self._reservas is None:
+                raise FalhaPersistencia(
+                    "Serviço de histórico indisponível."
+                )
+
+            try:
+                parametros = parse_qs(
+                    environ.get("QUERY_STRING", ""),
+                    keep_blank_values=True,
+                    max_num_fields=10
+                )
+            except ValueError as erro:
+                raise DadosInvalidos(
+                    "Filtros de pesquisa inválidos."
+                ) from erro
+
+            nomes = (
+                "usuario_id",
+                "recurso_id",
+                "desde",
+                "ate"
+            )
+
+            filtros = {}
+
+            for nome in nomes:
+                valores = parametros.get(nome, [""])
+
+                if len(valores) != 1:
+                    raise DadosInvalidos(
+                        "Não repita os filtros de pesquisa."
+                    )
+
+                filtros[nome] = valores[0].strip()
+
+            mensagem = ""
+            eventos = []
+
+            try:
+                usuario_id = (
+                    self._identificador(
+                        filtros["usuario_id"]
+                    )
+                    if filtros["usuario_id"]
+                    else None
+                )
+
+                recurso_id = (
+                    self._identificador(
+                        filtros["recurso_id"]
+                    )
+                    if filtros["recurso_id"]
+                    else None
+                )
+
+                desde = self._data_filtro_historico(
+                    filtros["desde"]
+                )
+
+                ate = self._data_filtro_historico(
+                    filtros["ate"],
+                    fim=True
+                )
+
+                eventos = self._historico.listar(
+                    token,
+                    usuario_id=usuario_id,
+                    recurso_id=recurso_id,
+                    desde=desde,
+                    ate=ate
+                )
+
+            except DadosInvalidos as erro:
+                mensagem = str(erro)
+
+            # Recursos disponíveis como opções do filtro.
+            salas, bancadas, equipamentos = (
+                self._reservas.listar_recursos(token)
+            )
+
+            recursos = (
+                list(salas)
+                + list(bancadas)
+                + list(equipamentos)
+            )
+
+            # Apenas o Chefe pode selecionar outro usuário.
+            usuarios = (
+                self._cadastro.listar(token)
+                if isinstance(usuario, ChefeLaboratorio)
+                else []
+            )
+
+            return Resposta(
+                paginas.pagina_historico(
+                    usuario,
+                    csrf,
+                    eventos,
+                    recursos,
+                    usuarios,
+                    filtros,
+                    mensagem
+                ),
+                400 if mensagem else 200
+            )
+        if rota == "/limites-reserva":
+
+            # A tela é exclusiva do Chefe.
+            if not isinstance(usuario, ChefeLaboratorio):
+                raise AcessoNegado(
+                    "Somente o Chefe pode configurar "
+                    "os limites de reserva."
+                )
+
+            if self._limites is None:
+                raise FalhaPersistencia(
+                    "Serviço de limites indisponível."
+                )
+
+            mensagem = ""
+
+            if metodo == "POST":
+
+                try:
+                    # Converte os campos para números.
+                    # Campo vazio significa ausência de limite.
+                    def inteiro_opcional(nome):
+                        texto = campos.get(nome, "").strip()
+
+                        if not texto:
+                            return None
+
+                        try:
+                            numero = int(texto)
+                        except ValueError as erro:
+                            raise DadosInvalidos(
+                                "Informe um número inteiro válido."
+                            ) from erro
+
+                        if numero <= 0:
+                            raise DadosInvalidos(
+                                "Os limites devem ser positivos."
+                            )
+
+                        return numero
+
+                    duracao = inteiro_opcional(
+                        "duracao_minutos"
+                    )
+
+                    quantidade = inteiro_opcional(
+                        "quantidade"
+                    )
+
+                    # Solicita a alteração ao serviço.
+                    self._limites.configurar(
+                        token,
+                        duracao_minutos=duracao,
+                        quantidade=quantidade
+                    )
+
+                    return self._redirecionar(
+                        "/limites-reserva?salvo=ok"
+                    )
+
+                except (AcessoNegado, FalhaPersistencia):
+                    raise
+
+                except ErroAplicacao as erro:
+                    mensagem = str(erro)
+
+            # Consulta os limites atuais.
+            laboratorio = self._limites.consultar(token)
+
+            sucesso = (
+                "Limites de reserva atualizados com sucesso."
+                if (
+                    metodo == "GET"
+                    and environ.get("QUERY_STRING") == "salvo=ok"
+                )
+                else ""
+            )
+
+            return Resposta(
+                paginas.formulario_limites_reserva(
+                    usuario,
+                    csrf,
+                    laboratorio,
+                    dados=campos if metodo == "POST" else None,
+                    mensagem=mensagem,
+                    sucesso=sucesso
+                ),
+                400 if mensagem else 200
+            )
+        if rota == "/recursos/vinculos":
+
+            # Apenas o Chefe pode acessar esta página.
+            if not isinstance(usuario, ChefeLaboratorio):
+                raise AcessoNegado(
+                    "Somente o Chefe pode alterar vínculos "
+                    "de equipamentos."
+                )
+
+            if self._recursos is None:
+                raise FalhaPersistencia(
+                    "Serviço de recursos indisponível."
+                )
+
+            mensagem = ""
+
+            # Processa os formulários.
+            if metodo == "POST":
+                try:
+                    acao = campos.get("acao", "")
+
+                    if acao not in {
+                        "vincular",
+                        "desvincular"
+                    }:
+                        raise DadosInvalidos(
+                            "Operação de vínculo inválida."
+                        )
+
+                    equipamento_id = self._identificador(
+                        campos.get("equipamento_id")
+                    )
+
+                    complemento = (
+                        campos.get("complemento_local", "")
+                        .strip() or None
+                    )
+
+                    if acao == "vincular":
+                        bancada_id = self._identificador(
+                            campos.get("bancada_id")
+                        )
+
+                        self._recursos.vincular_equipamento(
+                            token,
+                            equipamento_id=equipamento_id,
+                            bancada_id=bancada_id,
+                            complemento_local=complemento
+                        )
+
+                    else:
+                        self._recursos.desvincular_equipamento(
+                            token,
+                            equipamento_id=equipamento_id
+                        )
+
+                    return self._redirecionar(
+                        f"/recursos/vinculos?acao={acao}"
+                    )
+
+                except (AcessoNegado, FalhaPersistencia):
+                    raise
+
+                except ErroAplicacao as erro:
+                    mensagem = str(erro)
+
+            # Consulta a localização atual.
+            _, bancadas, equipamentos = (
+                self._recursos.listar(token)
+            )
+
+            sucesso = ""
+
+            if metodo == "GET":
+                acao_confirmada = parse_qs(
+                    environ.get("QUERY_STRING", "")
+                ).get("acao", [""])[0]
+
+                sucesso = {
+                    "vincular":
+                        "Equipamento vinculado com sucesso.",
+                    "desvincular":
+                        "Equipamento desvinculado com sucesso."
+                }.get(acao_confirmada, "")
+
+            return Resposta(
+                paginas.formulario_vinculos_equipamento(
+                    usuario,
+                    csrf,
+                    bancadas,
+                    equipamentos,
+                    dados=campos if metodo == "POST" else None,
+                    mensagem=mensagem,
+                    sucesso=sucesso
+                ),
+                400 if mensagem else 200
+            )
+
+
+
+        
+        if rota == "/reservas/nova":
+
+            if self._reservas is None:
+                raise FalhaPersistencia(
+                    "Serviço de reservas indisponível."
+                )
+
+            mensagem = ""
+
+            # Processa o formulário enviado.
+            if metodo == "POST":
+                try:
+                    recurso_id = self._identificador(
+                        campos.get("recurso_id")
+                    )
+
+                    inicio = self._data_hora_reserva(
+                        campos.get("inicio")
+                    )
+
+                    fim = self._data_hora_reserva(
+                        campos.get("fim")
+                    )
+
+                    self._reservas.reservar(
+                        token,
+                        recurso_id=recurso_id,
+                        inicio=inicio,
+                        fim=fim
+                    )
+
+                    return self._redirecionar(
+                        "/reservas/nova?criada=ok"
+                    )
+
+                except (AcessoNegado, FalhaPersistencia):
+                    raise
+
+                except ErroAplicacao as erro:
+                    mensagem = str(erro)
+
+            # A listagem está disponível para
+            # qualquer usuário autenticado.
+            salas, bancadas, equipamentos = (
+                self._reservas.listar_recursos(token)
+            )
+
+            parametros = parse_qs(
+                environ.get("QUERY_STRING", "")
+            )
+
+            sucesso = (
+                "Reserva registrada com sucesso."
+                if (
+                    metodo == "GET"
+                    and parametros.get("criada") == ["ok"]
+                )
+                else ""
+            )
+
+            return Resposta(
+                paginas.formulario_reserva(
+                    usuario,
+                    csrf,
+                    salas,
+                    bancadas,
+                    equipamentos,
+                    dados=campos if metodo == "POST" else None,
+                    mensagem=mensagem,
+                    sucesso=sucesso
+                ),
+                400 if mensagem else 200
+            )
+        
+
 
 
         

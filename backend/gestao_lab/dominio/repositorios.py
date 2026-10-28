@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import TracebackType
 from typing import Self
 from .laboratorios import Laboratorio
@@ -8,6 +8,7 @@ from .usuarios import Usuario
 from .salas import Sala
 from .bancadas import Bancada
 from .equipamentos import Equipamento
+from .historico import HistoricoUso
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,18 @@ class RepositorioLaboratorios(ABC):
         """Lista os laboratórios ativos."""
         ...
 
+    
+    @abstractmethod
+    def atualizar_limites(
+        self,
+        laboratorio_id: int,
+        chefe_id: int,
+        duracao: timedelta | None,
+        quantidade: int | None
+    ) -> Laboratorio:
+        """Atualiza os limites de reserva do laboratório."""
+        ...
+
 
 
 
@@ -118,6 +131,74 @@ class RepositorioRecursos(ABC):
         """Lista os equipamentos de um laboratório."""
         ...
 
+    
+    @abstractmethod
+    def alterar_local_equipamento(
+        self,
+        chefe_id: int,
+        equipamento: Equipamento
+    ) -> None:
+        """Atualiza o vínculo de um equipamento cadastrado."""
+        ...
+
+
+
+class RepositorioReservas(ABC):
+    """Contrato para criação e cancelamento de reservas."""
+
+    @abstractmethod
+    def criar(
+        self,
+        usuario_id: int,
+        recurso_id: int,
+        inicio: datetime,
+        fim: datetime
+    ) -> int:
+        """Cria uma reserva e retorna seu identificador."""
+        ...
+
+    @abstractmethod
+    def cancelar(
+        self,
+        ator_id: int,
+        reserva_id: int,
+        motivo: str
+    ) -> None:
+        """Cancela uma reserva registrada no banco."""
+        ...
+
+    
+    @abstractmethod
+    def listar(
+        self,
+        laboratorio_id: int,
+        usuario_id: int,
+        pode_ver_todas: bool
+    ) -> list[dict]:
+        """Lista reservas respeitando o laboratório e o perfil."""
+        ...
+
+
+
+
+class RepositorioHistoricoUso(ABC):
+    """Contrato para consulta de eventos de reservas."""
+
+    @abstractmethod
+    def listar(
+        self,
+        laboratorio_id: int,
+        solicitante_id: int,
+        pode_ver_todas: bool,
+        *,
+        usuario_id: int | None = None,
+        recurso_id: int | None = None,
+        desde: datetime | None = None,
+        ate: datetime | None = None
+    ) -> list[HistoricoUso]:
+        """Consulta eventos com filtros e restrição de acesso."""
+        ...
+
 
 
 class RepositorioSessoes(ABC):
@@ -140,7 +221,9 @@ class UnidadeTrabalho(ABC):
     usuarios: RepositorioUsuarios
     laboratorios: RepositorioLaboratorios
     recursos: RepositorioRecursos
+    reservas: RepositorioReservas
     sessoes: RepositorioSessoes
+    historico: RepositorioHistoricoUso
 
     @abstractmethod
     def contexto(self, ator_id: int | None, motivo: str) -> None: ...
