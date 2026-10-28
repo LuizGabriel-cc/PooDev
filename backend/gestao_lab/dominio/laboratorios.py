@@ -1,5 +1,5 @@
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 
 from .erros import DadosInvalidos
@@ -54,3 +54,35 @@ class Laboratorio:
             raise DadosInvalidos(
                 "Os dias de alerta não podem ser negativos."
             )
+
+
+
+    
+    def configurar_limites(
+        self,
+        duracao: timedelta | None,
+        quantidade: int | None
+    ) -> "Laboratorio":
+        """Retorna um laboratório com novos limites."""
+
+        if duracao is not None and (
+            not isinstance(duracao, timedelta)
+            or duracao <= timedelta(0)
+        ):
+            raise DadosInvalidos(
+                "A duração máxima deve ser positiva."
+            )
+
+        if quantidade is not None and (
+            type(quantidade) is not int
+            or quantidade <= 0
+        ):
+            raise DadosInvalidos(
+                "A quantidade máxima deve ser positiva."
+            )
+
+        return replace(
+            self,
+            duracao_maxima_reserva=duracao,
+            max_reservas_simultaneas=quantidade
+        )

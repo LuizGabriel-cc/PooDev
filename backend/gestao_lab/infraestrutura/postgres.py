@@ -1,16 +1,19 @@
 from dataclasses import replace
 from types import TracebackType
 from typing import Self
+from datetime import datetime
 
 import psycopg
 from psycopg.rows import dict_row
 from ..dominio.laboratorios import Laboratorio
-from ..dominio.erros import CadastroDuplicado, DadosInvalidos, FalhaPersistencia
-from ..dominio.repositorios import RepositorioLaboratorios, RepositorioRecursos, RepositorioSessoes, RepositorioUsuarios, Sessao, UnidadeTrabalho
+from ..dominio.erros import CadastroDuplicado, DadosInvalidos, FalhaPersistencia, AcessoNegado
+from ..dominio.repositorios import RepositorioLaboratorios, RepositorioRecursos, RepositorioReservas, RepositorioSessoes, RepositorioUsuarios, Sessao, UnidadeTrabalho
 from ..dominio.usuarios import Aluno, ChefeLaboratorio, Professor, Usuario
 from ..dominio.salas import Sala
 from ..dominio.bancadas import Bancada
 from ..dominio.equipamentos import Equipamento
+from ..dominio.historico import HistoricoUso
+from ..dominio.repositorios import RepositorioHistoricoUso
 
 
 CONSULTA_USUARIOS = """
@@ -168,6 +171,58 @@ class LaboratoriosPostgres(RepositorioLaboratorios):
             Laboratorio(**linha)
             for linha in linhas
         ]
+
+
+    
+    def atualizar_limites(
+        self,
+        laboratorio_id: int,
+        chefe_id: int,
+        duracao,
+        quantidade
+    ) -> Laboratorio:
+
+        # Confirma a permissão no próprio PostgreSQL.
+        self._conexao.execute("""
+            SELECT gestao_lab.exigir_chefe(%s, %s)
+        """, (
+            chefe_id,
+            laboratorio_id
+        ))
+
+        # Atualiza os dois limites na mesma transação.
+        resultado = self._conexao.execute("""
+            UPDATE gestao_lab.laboratorio
+            SET
+                duracao_maxima_reserva = %s,
+                max_reservas_simultaneas = %s
+            WHERE id = %s
+              AND chefe_usuario_id = %s
+              AND ativo = true
+            RETURNING
+                id,
+                nome,
+                localizacao,
+                chefe_usuario_id,
+                ativo,
+                duracao_maxima_reserva,
+                max_reservas_simultaneas,
+                dias_alerta_validade
+        """, (
+            duracao,
+            quantidade,
+            laboratorio_id,
+            chefe_id
+        ))
+
+        linha = resultado.fetchone()
+
+        if linha is None:
+            raise DadosInvalidos(
+                "Laboratório não encontrado ou inativo."
+            )
+
+        return Laboratorio(**linha)
 
 
 
@@ -424,6 +479,236 @@ class RecursosPostgres(RepositorioRecursos):
         return replace(equipamento, id=recurso_id)
 
 
+    
+    def alterar_local_equipamento(
+        self,
+        chefe_id: int,
+        equipamento: Equipamento
+    ) -> None:
+        """Persiste a alteração de localização no PostgreSQL."""
+
+        # O equipamento já precisa estar cadastrado.
+        if equipamento.id is None:
+            raise DadosInvalidos(
+                "O equipamento precisa estar cadastrado "
+                "para alterar sua localização."
+            )
+
+        # Utiliza a função SQL que já aplica
+        # permissões e regras de integridade.
+        self._conexao.execute("""
+            SELECT gestao_lab.alterar_local_equipamento(
+                %s, %s, %s, %s, %s
+            )
+        """, (
+            chefe_id,
+            equipamento.id,
+            equipamento.bancada_id,
+            equipamento.sala_direta_id,
+            equipamento.complemento_local
+        ))
+
+
+
+class ReservasPostgres(RepositorioReservas):
+    """Implementação das reservas usando PostgreSQL."""
+
+    def __init__(self, conexao):
+        self._conexao = conexao
+
+    def criar(
+        self,
+        usuario_id: int,
+        recurso_id: int,
+        inicio,
+        fim
+    ) -> int:
+
+        resultado = self._conexao.execute("""
+            SELECT gestao_lab.criar_reserva(
+                %s, %s, %s, %s
+            ) AS id
+        """, (
+            usuario_id,
+            recurso_id,
+            inicio,
+            fim
+        ))
+
+        return int(resultado.fetchone()["id"])
+
+    def cancelar(
+        self,
+        ator_id: int,
+        reserva_id: int,
+        motivo: str
+    ) -> None:
+
+        self._conexao.execute("""
+            SELECT gestao_lab.cancelar_reserva(
+                %s, %s, %s
+            )
+        """, (
+            ator_id,
+            reserva_id,
+            motivo
+        ))
+
+
+
+    
+    def listar(
+        self,
+        laboratorio_id: int,
+        usuario_id: int,
+        pode_ver_todas: bool
+    ) -> list[dict]:
+
+        resultado = self._conexao.execute("""
+            SELECT
+                r.id,
+                r.usuario_id,
+                u.nome AS usuario_nome,
+                r.recurso_principal_id,
+                rec.nome AS recurso_nome,
+                rec.tipo::text AS tipo_recurso,
+                r.inicio,
+                r.fim,
+                r.estado::text AS estado,
+                r.cancelado_em,
+                r.motivo_cancelamento
+            FROM gestao_lab.reserva r
+            JOIN gestao_lab.usuario u
+                ON u.id = r.usuario_id
+            JOIN gestao_lab.recurso rec
+                ON rec.id = r.recurso_principal_id
+            WHERE r.laboratorio_id = %s
+              AND (
+                  %s
+                  OR r.usuario_id = %s
+              )
+            ORDER BY r.id DESC
+            LIMIT 100
+        """, (
+            laboratorio_id,
+            pode_ver_todas,
+            usuario_id
+        ))
+
+        return resultado.fetchall()
+
+
+
+class HistoricoUsoPostgres(RepositorioHistoricoUso):
+    """Consulta o histórico de reservas registrado pelo PostgreSQL."""
+
+    def __init__(self, conexao):
+        self._conexao = conexao
+
+    def listar(
+        self,
+        laboratorio_id: int,
+        solicitante_id: int,
+        pode_ver_todas: bool,
+        *,
+        usuario_id: int | None = None,
+        recurso_id: int | None = None,
+        desde: datetime | None = None,
+        ate: datetime | None = None
+    ) -> list[HistoricoUso]:
+
+        resultado = self._conexao.execute("""
+            SELECT
+                h.id,
+                h.laboratorio_id,
+                h.tabela,
+                h.registro_id,
+                h.acao,
+                h.registrado_em,
+                h.ator_id,
+                h.motivo,
+                h.antes,
+                h.depois
+
+            FROM gestao_lab.historico_uso AS h
+
+            JOIN gestao_lab.reserva AS r
+                ON r.id = CASE
+                    WHEN h.tabela = 'reserva'
+                    THEN (
+                        COALESCE(h.depois, h.antes) ->> 'id'
+                    )::bigint
+
+                    ELSE (
+                        COALESCE(h.depois, h.antes) ->> 'reserva_id'
+                    )::bigint
+                END
+                AND r.laboratorio_id = h.laboratorio_id
+
+            WHERE h.laboratorio_id = %s
+
+              AND h.tabela IN (
+                  'reserva',
+                  'reserva_recurso'
+              )
+
+              AND (
+                  %s
+                  OR r.usuario_id = %s
+              )
+
+              AND (
+                  %s::bigint IS NULL
+                  OR r.usuario_id = %s
+              )
+
+              AND (
+                  %s::bigint IS NULL
+                  OR r.recurso_principal_id = %s
+                  OR EXISTS (
+                      SELECT 1
+                      FROM gestao_lab.reserva_recurso AS rr
+                      WHERE rr.reserva_id = r.id
+                        AND rr.recurso_id = %s
+                  )
+              )
+
+              AND (
+                  %s::timestamptz IS NULL
+                  OR h.registrado_em >= %s
+              )
+
+              AND (
+                  %s::timestamptz IS NULL
+                  OR h.registrado_em < %s
+              )
+
+            ORDER BY h.registrado_em DESC, h.id DESC
+            LIMIT 100
+
+        """, (
+            laboratorio_id,
+            pode_ver_todas,
+            solicitante_id,
+            usuario_id,
+            usuario_id,
+            recurso_id,
+            recurso_id,
+            recurso_id,
+            desde,
+            desde,
+            ate,
+            ate
+        ))
+
+        return [
+            HistoricoUso(**linha)
+            for linha in resultado.fetchall()
+        ]
+
+
+
+
 
 class SessoesPostgres(RepositorioSessoes):
     def __init__(self, conexao):
@@ -453,14 +738,125 @@ class SessoesPostgres(RepositorioSessoes):
         """, (usuario_id,))
 
 
+#não mexer na identação dessa função abaixo.
+
 def traduzir_erro(erro: psycopg.Error) -> Exception:
-    if erro.sqlstate == "23505":
-        if erro.diag.constraint_name == "aluno_matricula_key":
-            return CadastroDuplicado("Já existe um aluno com essa matrícula.")
-        return CadastroDuplicado("Já existe um cadastro com esse e-mail ou identificador.")
-    if erro.sqlstate in {"23503", "23514"}:
-        return DadosInvalidos("Os dados não respeitam os vínculos ou regras do cadastro.")
-    return FalhaPersistencia("Não foi possível concluir a operação no PostgreSQL. Verifique a conexão e a instalação do schema.")
+        codigo = erro.sqlstate
+
+        diagnostico = getattr(erro, "diag", None)
+        restricao = getattr(
+            diagnostico, "constraint_name", None
+        )
+        mensagem = (
+            getattr(diagnostico, "message_primary", None) or ""
+        )
+
+        # Conflito entre reservas no mesmo período.
+        if codigo == "23P01":
+            if restricao == "reserva_recurso_sem_sobreposicao":
+                return DadosInvalidos(
+                    "Um dos recursos já está reservado nesse período. "
+                    "Escolha outro horário."
+                )
+
+            return DadosInvalidos(
+                "Existe um conflito entre os registros solicitados."
+            )
+
+        # Falta de autorização.
+        if codigo == "42501":
+            mensagens = {
+                "Somente o dono ou Chefe pode cancelar":
+                    "Somente o titular ou o Chefe pode cancelar "
+                    "esta reserva.",
+
+                "Aluno proibido de utilizar equipamento abrangido":
+                    "Você não tem permissão para reservar "
+                    "um dos equipamentos.",
+
+                "Usuário inativo ou sem vínculo com o laboratório":
+                    "Usuário inativo ou sem vínculo "
+                    "com este laboratório.",
+
+                "Operação exige o Chefe do laboratório":
+                    "A operação exige permissão "
+                    "do Chefe do laboratório."
+            }
+
+            return AcessoNegado(
+                mensagens.get(
+                    mensagem,
+                    "Você não tem permissão para realizar "
+                    "esta operação."
+                )
+            )
+
+        # Violações das regras de negócio.
+        if codigo == "23514":
+            mensagens = {
+                "Período inválido":
+                    "O período informado para a reserva é inválido.",
+
+                "Duração excede o limite do laboratório":
+                    "A duração excede o limite "
+                    "configurado para o laboratório.",
+
+                "Quantidade simultânea excede o limite por usuário":
+                    "Você atingiu o limite de reservas "
+                    "simultâneas do laboratório.",
+
+                "Conjunto contém recurso ou local indisponível":
+                    "O recurso ou um dos seus locais "
+                    "está indisponível.",
+
+                "Reserva não está confirmada":
+                    "Essa reserva não está confirmada "
+                    "e não pode ser cancelada.",
+
+                "Informe motivo de cancelamento":
+                    "Informe o motivo do cancelamento."
+            }
+
+            return DadosInvalidos(
+                mensagens.get(
+                    mensagem,
+                    "Os dados não respeitam as regras do sistema."
+                )
+            )
+
+        # Vínculo inválido entre tabelas.
+        if codigo == "23503":
+            return DadosInvalidos(
+                "Um dos registros vinculados não existe "
+                "ou é inválido."
+            )
+
+        # Cadastro duplicado: preserva a regra da Semana 2.
+        if codigo == "23505":
+            if restricao == "aluno_matricula_key":
+                return CadastroDuplicado(
+                    "Já existe um aluno com essa matrícula."
+                )
+
+            return CadastroDuplicado(
+                "Já existe um cadastro com esse "
+                "e-mail ou identificador."
+            )
+
+        # Registro não encontrado.
+        if codigo == "P0002":
+            return DadosInvalidos(
+                "O recurso ou a reserva solicitada "
+                "não foi encontrado."
+            )
+
+        # Falhas inesperadas continuam sem expor detalhes internos.
+        return FalhaPersistencia(
+            "Não foi possível concluir a operação "
+            "no PostgreSQL. Verifique a conexão "
+            "e a instalação do schema."
+        )
+
 
 
 class UnidadeTrabalhoPostgres(UnidadeTrabalho):
@@ -480,6 +876,8 @@ class UnidadeTrabalhoPostgres(UnidadeTrabalho):
         self.usuarios = UsuariosPostgres(self._conexao)
         self.laboratorios = LaboratoriosPostgres(self._conexao)
         self.recursos = RecursosPostgres(self._conexao)
+        self.reservas = ReservasPostgres(self._conexao)
+        self.historico = HistoricoUsoPostgres(self._conexao)
         self.sessoes = SessoesPostgres(self._conexao)
         return self
 

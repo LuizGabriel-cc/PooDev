@@ -1,5 +1,5 @@
 from html import escape
-
+from datetime import timedelta, timezone
 from ..dominio.usuarios import Aluno, ChefeLaboratorio, Perfil, Professor, TipoAluno
 
 ROTULOS = {Perfil.ALUNO: "Aluno", Perfil.PROFESSOR: "Professor", Perfil.CHEFE: "Chefe de Laboratório"}
@@ -14,14 +14,21 @@ def oculto(csrf):
 def layout(titulo, conteudo, usuario=None, csrf=""):
     nav = ''
     if usuario:
-        links = '<a href="/">Meu perfil</a>'
-      
+        links = (
+            '<a href="/">Meu perfil</a>'
+            '<a href="/reservas/nova">Reservar</a>'
+        )
+
+        links += '<a href="/reservas">Reservas</a>'
+        links += '<a href="/historico">Histórico</a>'
+
         if isinstance(usuario, ChefeLaboratorio):
             links += (
                 '<a href="/usuarios">Usuários</a>'
                 '<a href="/recursos">Recursos</a>'
                 '<a href="/cadastros/aluno">Cadastrar aluno</a>'
                 '<a href="/cadastros/professor">Cadastrar professor</a>'
+                '<a href="/limites-reserva">Limites</a>'
             )
 
         nav = f'<nav>{links}<form method="post" action="/sair">{oculto(csrf)}<button class="secundario">Sair</button></form></nav>'
@@ -427,6 +434,9 @@ def painel_recursos(
             <a class="botao secundario" href="/cadastros/equipamento">
                 Cadastrar equipamento
             </a>
+            <a class="botao secundario" href="/recursos/vinculos">
+                Vínculos de equipamentos
+            </a>
         </div>
     </section>
     '''
@@ -451,3 +461,689 @@ def painel_recursos(
 
     return layout("Recursos do laboratório", corpo, ator, csrf)
 
+
+
+
+def formulario_reserva(
+    ator,
+    csrf,
+    salas,
+    bancadas,
+    equipamentos,
+    dados=None,
+    mensagem="",
+    sucesso=""
+):
+    dados = dados or {}
+
+    # Organiza as opções do formulário.
+    opcoes = (
+        [
+            (
+                sala.id,
+                f"Sala — {sala.identificacao} — "
+                f"{sala.nome} ({sala.estado.value})"
+            )
+            for sala in salas
+            if sala.id is not None
+        ]
+        +
+        [
+            (
+                bancada.id,
+                f"Bancada — {bancada.numero_identificacao} — "
+                f"{bancada.nome} ({bancada.estado.value})"
+            )
+            for bancada in bancadas
+            if bancada.id is not None
+        ]
+        +
+        [
+            (
+                equipamento.id,
+                f"Equipamento — {equipamento.numero_patrimonio} — "
+                f"{equipamento.nome} ({equipamento.estado.value})"
+            )
+            for equipamento in equipamentos
+            if equipamento.id is not None
+        ]
+    )
+
+    # Campos que o usuário preencherá.
+    campos = (
+        _selecao_recurso(
+            "recurso_id",
+            "Recurso",
+            opcoes,
+            dados.get("recurso_id", "")
+        )
+        + campo(
+            "inicio",
+            "Início (horário de Brasília, UTC-03:00)",
+            dados.get("inicio", ""),
+            "datetime-local"
+        )
+        + campo(
+            "fim",
+            "Fim (horário de Brasília, UTC-03:00)",
+            dados.get("fim", ""),
+            "datetime-local"
+        )
+    )
+
+    corpo = aviso(sucesso) + aviso(mensagem, True)
+
+    corpo += (
+        '<section class="cartao">'
+        '<p>Reservar uma bancada inclui todos os '
+        'equipamentos nela. Reservar uma sala '
+        'bloqueia a sala inteira durante o período '
+        'escolhido.</p>'
+
+        '<form method="post" action="/reservas/nova">'
+        + oculto(csrf)
+        + f'<div class="campos">{campos}</div>'
+        + '<div class="acoes">'
+        '<button type="submit">Confirmar reserva</button>'
+        '<a href="/">Voltar</a>'
+        '</div></form></section>'
+    )
+
+    return layout(
+        "Reservar recurso",
+        corpo,
+        ator,
+        csrf
+    )
+
+
+
+
+def pagina_reservas(
+    ator,
+    csrf,
+    reservas,
+    mensagem="",
+    erro=False
+):
+    eh_chefe = isinstance(ator, ChefeLaboratorio)
+
+    titulo = (
+        "Reservas do laboratório"
+        if eh_chefe
+        else "Minhas reservas"
+    )
+
+    corpo = aviso(mensagem, erro)
+
+    corpo += (
+        '<section class="cartao">'
+        '<p>Consulte as reservas registradas e '
+        'cancele as que não serão utilizadas.</p>'
+        '<div class="acoes">'
+        '<a class="botao" href="/reservas/nova">'
+        'Nova reserva</a>'
+        '</div>'
+        '</section>'
+    )
+
+    if not reservas:
+        corpo += (
+            '<section class="cartao">'
+            '<p>Nenhuma reserva encontrada.</p>'
+            '</section>'
+        )
+
+        return layout(titulo, corpo, ator, csrf)
+
+    fuso = timezone(timedelta(hours=-3))
+    linhas = []
+
+    for reserva in reservas:
+        inicio = reserva["inicio"].astimezone(fuso)
+        fim = reserva["fim"].astimezone(fuso)
+
+        periodo = (
+            f'{inicio:%d/%m/%Y %H:%M} até '
+            f'{fim:%d/%m/%Y %H:%M}'
+        )
+
+        estado = reserva["estado"]
+
+        rotulos = {
+            "CONFIRMADA": "Confirmada",
+            "CANCELADA": "Cancelada",
+            "CONCLUIDA": "Concluída"
+        }
+
+        situacao = rotulos.get(
+            estado, estado
+        )
+
+        recurso = (
+            f'{reserva["tipo_recurso"]} — '
+            f'{reserva["recurso_nome"]}'
+        )
+
+        titular = (
+            escape(reserva["usuario_nome"])
+            if eh_chefe
+            else "Você"
+        )
+
+        pode_cancelar = (
+            estado == "CONFIRMADA"
+            and (
+                ator.id == reserva["usuario_id"]
+                or eh_chefe
+            )
+        )
+
+        acao = "—"
+
+        if pode_cancelar:
+            acao = (
+                '<form method="post" '
+                'action="/reservas/cancelar">'
+                + oculto(csrf)
+                + '<input type="hidden" '
+                'name="reserva_id" '
+                f'value="{int(reserva["id"])}">'
+                '<label>Motivo'
+                '<input type="text" name="motivo" '
+                'maxlength="300" required '
+                'placeholder="Informe o motivo">'
+                '</label>'
+                '<button type="submit" '
+                'class="secundario">'
+                'Cancelar reserva'
+                '</button>'
+                '</form>'
+            )
+
+        detalhe = ""
+
+        if (
+            estado == "CANCELADA"
+            and reserva["motivo_cancelamento"]
+        ):
+            detalhe = (
+                '<p>Motivo: '
+                + escape(
+                    str(reserva["motivo_cancelamento"])
+                )
+                + '</p>'
+            )
+
+        linhas.append(
+            '<tr>'
+            f'<td>#{int(reserva["id"])}</td>'
+            f'<td>{escape(recurso)}</td>'
+            f'<td>{escape(periodo)}</td>'
+            f'<td>{titular}</td>'
+            f'<td>{escape(situacao)}{detalhe}</td>'
+            f'<td>{acao}</td>'
+            '</tr>'
+        )
+
+    corpo += (
+        '<section class="cartao">'
+        '<p>Exibindo até 100 reservas recentes. '
+        'Horários de Brasília.</p>'
+        '<table>'
+        '<thead><tr>'
+        '<th>ID</th>'
+        '<th>Recurso</th>'
+        '<th>Período</th>'
+        '<th>Titular</th>'
+        '<th>Estado</th>'
+        '<th>Ação</th>'
+        '</tr></thead>'
+        '<tbody>'
+        + "".join(linhas)
+        + '</tbody></table>'
+        '</section>'
+    )
+
+    return layout(
+        titulo,
+        corpo,
+        ator,
+        csrf
+    )
+
+
+
+
+def pagina_historico(
+    ator,
+    csrf,
+    eventos,
+    recursos,
+    usuarios,
+    filtros=None,
+    mensagem=""
+):
+    from datetime import timedelta, timezone
+
+    filtros = filtros or {}
+
+    eh_chefe = isinstance(ator, ChefeLaboratorio)
+
+    # Opções para filtrar por recurso.
+    opcoes_recursos = [
+        (
+            recurso.id,
+            f"{type(recurso).__name__} — {recurso.nome}"
+        )
+        for recurso in recursos
+        if recurso.id is not None
+    ]
+
+    campos = _selecao_recurso(
+        "recurso_id",
+        "Recurso",
+        opcoes_recursos,
+        filtros.get("recurso_id", ""),
+        obrigatorio=False
+    )
+
+    # Somente o Chefe pode pesquisar por outro usuário.
+    if eh_chefe:
+        opcoes_usuarios = [
+            (usuario.id, usuario.nome)
+            for usuario in usuarios
+            if usuario.id is not None
+        ]
+
+        campos += _selecao_recurso(
+            "usuario_id",
+            "Usuário",
+            opcoes_usuarios,
+            filtros.get("usuario_id", ""),
+            obrigatorio=False
+        )
+
+    campos += (
+        campo(
+            "desde",
+            "Eventos a partir de",
+            filtros.get("desde", ""),
+            tipo="date",
+            obrigatorio=False
+        )
+        + campo(
+            "ate",
+            "Eventos até",
+            filtros.get("ate", ""),
+            tipo="date",
+            obrigatorio=False
+        )
+    )
+
+    corpo = aviso(mensagem, True)
+
+    corpo += (
+        '<section class="cartao">'
+        '<h2>Consultar histórico</h2>'
+        '<p>Os filtros por data consideram quando '
+        'o evento foi registrado, e não a data '
+        'agendada da reserva.</p>'
+        '<form method="get" action="/historico">'
+        f'<div class="campos">{campos}</div>'
+        '<div class="acoes">'
+        '<button type="submit">Filtrar</button>'
+        '<a href="/historico">Limpar filtros</a>'
+        '</div></form></section>'
+    )
+
+    if not eventos:
+        corpo += (
+            '<section class="cartao">'
+            '<p>Nenhum evento encontrado.</p>'
+            '</section>'
+        )
+        return layout(
+            "Histórico de reservas",
+            corpo,
+            ator,
+            csrf
+        )
+
+    fuso = timezone(timedelta(hours=-3))
+    linhas = []
+
+    for evento in eventos:
+
+        if evento.eh_cancelamento():
+            descricao = (
+                f"Reserva #{evento.registro_id} cancelada"
+            )
+
+        elif (
+            evento.tabela == "reserva"
+            and evento.acao == "INSERT"
+        ):
+            descricao = (
+                f"Reserva #{evento.registro_id} criada"
+            )
+
+        elif evento.tabela == "reserva_recurso":
+            dados = evento.depois or evento.antes or {}
+
+            reserva_id = dados.get("reserva_id", "?")
+            recurso_id = dados.get("recurso_id", "?")
+
+            if evento.acao == "INSERT":
+                descricao = (
+                    f"Recurso #{recurso_id} incluído "
+                    f"na reserva #{reserva_id}"
+                )
+            else:
+                descricao = (
+                    f"Recurso #{recurso_id} atualizado "
+                    f"na reserva #{reserva_id}"
+                )
+
+        else:
+            descricao = (
+                f"Registro {evento.registro_id} atualizado"
+            )
+
+        data_local = evento.registrado_em.astimezone(
+            fuso
+        )
+
+        data_formatada = data_local.strftime(
+            "%d/%m/%Y %H:%M"
+        )
+
+        responsavel = (
+            str(evento.ator_id)
+            if evento.ator_id is not None
+            else "Sistema"
+        )
+
+        motivo = evento.motivo or "—"
+
+        linhas.append(
+            "<tr>"
+            f"<td>#{evento.id}</td>"
+            f"<td>{escape(data_formatada)}</td>"
+            f"<td>{escape(descricao)}</td>"
+            f"<td>{escape(responsavel)}</td>"
+            f"<td>{escape(str(motivo))}</td>"
+            "</tr>"
+        )
+
+    corpo += (
+        '<section class="cartao">'
+        '<h2>Eventos registrados</h2>'
+        '<p>Exibindo até 100 eventos mais recentes. '
+        'Horários de Brasília.</p>'
+        '<div class="tabela">'
+        '<table>'
+        '<thead><tr>'
+        '<th>ID</th>'
+        '<th>Data e hora</th>'
+        '<th>Evento</th>'
+        '<th>Responsável (ID)</th>'
+        '<th>Motivo</th>'
+        '</tr></thead>'
+        f'<tbody>{"".join(linhas)}</tbody>'
+        '</table></div></section>'
+    )
+
+    return layout(
+        "Histórico de reservas",
+        corpo,
+        ator,
+        csrf
+    )
+
+
+
+def formulario_limites_reserva(
+    ator,
+    csrf,
+    laboratorio,
+    dados=None,
+    mensagem="",
+    sucesso=""
+):
+    # Exibe os valores atuais quando o formulário
+    # ainda não foi enviado.
+    if dados is None:
+        duracao = (
+            str(int(
+                laboratorio.duracao_maxima_reserva.total_seconds()
+                / 60
+            ))
+            if laboratorio.duracao_maxima_reserva is not None
+            else ""
+        )
+
+        quantidade = (
+            str(laboratorio.max_reservas_simultaneas)
+            if laboratorio.max_reservas_simultaneas is not None
+            else ""
+        )
+
+    else:
+        # Preserva os campos preenchidos se houver erro.
+        duracao = str(
+            dados.get("duracao_minutos", "")
+        )
+
+        quantidade = str(
+            dados.get("quantidade", "")
+        )
+
+    # Formulário HTML.
+    campos = (
+        '<label>Duração máxima por reserva (minutos)'
+        '<input type="number" '
+        'name="duracao_minutos" '
+        'min="1" step="1" '
+        f'value="{escape(duracao, quote=True)}">'
+        '</label>'
+
+        '<label>Quantidade máxima de reservas '
+        'simultâneas por usuário'
+        '<input type="number" '
+        'name="quantidade" '
+        'min="1" step="1" '
+        f'value="{escape(quantidade, quote=True)}">'
+        '</label>'
+    )
+
+    corpo = aviso(sucesso) + aviso(mensagem, True)
+
+    corpo += (
+        '<section class="cartao">'
+        '<p>Configure os limites válidos para novas '
+        'reservas do laboratório.</p>'
+
+        '<p>Deixe um campo vazio para não '
+        'estabelecer esse limite.</p>'
+
+        '<form method="post" action="/limites-reserva">'
+        + oculto(csrf)
+        + f'<div class="campos">{campos}</div>'
+        + '<div class="acoes">'
+        '<button type="submit">Salvar limites</button>'
+        '<a href="/reservas">Voltar às reservas</a>'
+        '</div></form></section>'
+    )
+
+    return layout(
+        "Limites de reserva",
+        corpo,
+        ator,
+        csrf
+    )
+
+
+
+def formulario_vinculos_equipamento(
+    ator, csrf, bancadas, equipamentos,
+    dados=None, mensagem="", sucesso=""
+):
+    dados = dados or {}
+
+    # Equipamentos disponíveis para seleção.
+    opcoes_equipamentos = [
+        (e.id, f"{e.numero_patrimonio} — {e.nome}")
+        for e in equipamentos
+        if e.id is not None
+    ]
+
+    # Bancadas do laboratório.
+    opcoes_bancadas = [
+        (b.id, f"{b.numero_identificacao} — {b.nome}")
+        for b in bancadas
+        if b.id is not None
+    ]
+
+    # Equipamentos atualmente vinculados a bancadas.
+    vinculados = [
+        e for e in equipamentos
+        if e.id is not None and e.bancada_id is not None
+    ]
+
+    opcoes_vinculados = [
+        (
+            e.id,
+            f"{e.numero_patrimonio} — {e.nome} "
+            f"(bancada #{e.bancada_id})"
+        )
+        for e in vinculados
+    ]
+
+    corpo = aviso(sucesso) + aviso(mensagem, True)
+
+    # FORMULÁRIO 1: Vincular ou trocar de bancada.
+    corpo += (
+        '<section class="cartao">'
+        '<p>Somente o Chefe pode alterar vínculos. '
+        'Alterações que afetem reservas confirmadas '
+        'poderão ser bloqueadas.</p>'
+        '<h2>Vincular ou trocar de bancada</h2>'
+    )
+
+    if equipamentos and bancadas:
+        campos = (
+            _selecao_recurso(
+                "equipamento_id",
+                "Equipamento",
+                opcoes_equipamentos,
+                dados.get("equipamento_id", "")
+            )
+            + _selecao_recurso(
+                "bancada_id",
+                "Bancada de destino",
+                opcoes_bancadas,
+                dados.get("bancada_id", "")
+            )
+            + campo(
+                "complemento_local",
+                "Complemento do local (opcional)",
+                dados.get("complemento_local", ""),
+                obrigatorio=False,
+                limite=200
+            )
+        )
+
+        corpo += (
+            '<form method="post" '
+            'action="/recursos/vinculos">'
+            + oculto(csrf)
+            + '<input type="hidden" '
+            'name="acao" value="vincular">'
+            + f'<div class="campos">{campos}</div>'
+            + '<div class="acoes">'
+            '<button type="submit">Salvar vínculo</button>'
+            '</div></form>'
+        )
+    else:
+        corpo += (
+            '<p>Cadastre um equipamento e uma '
+            'bancada primeiro.</p>'
+        )
+
+    corpo += '</section>'
+
+    # FORMULÁRIO 2: Desvincular da bancada.
+    corpo += (
+        '<section class="cartao">'
+        '<h2>Desvincular da bancada</h2>'
+    )
+
+    if vinculados:
+        campos = _selecao_recurso(
+            "equipamento_id",
+            "Equipamento vinculado",
+            opcoes_vinculados,
+            (
+                dados.get("equipamento_id", "")
+                if dados.get("acao") == "desvincular"
+                else ""
+            )
+        )
+
+        corpo += (
+            '<p>O equipamento continuará na sala '
+            'da bancada atual.</p>'
+            '<form method="post" '
+            'action="/recursos/vinculos">'
+            + oculto(csrf)
+            + '<input type="hidden" '
+            'name="acao" value="desvincular">'
+            + f'<div class="campos">{campos}</div>'
+            + '<div class="acoes">'
+            '<button type="submit" class="secundario">'
+            'Desvincular equipamento'
+            '</button></div></form>'
+        )
+    else:
+        corpo += (
+            '<p>Não há equipamentos vinculados '
+            'a bancadas.</p>'
+        )
+
+    corpo += '</section>'
+
+    # LISTAGEM: Localização atual dos equipamentos.
+    descricoes = []
+
+    for e in equipamentos:
+        local = (
+            f"Bancada #{e.bancada_id}"
+            if e.bancada_id is not None
+            else f"Sala #{e.sala_direta_id} (sem bancada)"
+        )
+
+        descricoes.append(
+            f'<li>{escape(e.numero_patrimonio)} — '
+            f'{escape(e.nome)}: {escape(local)}</li>'
+        )
+
+    corpo += (
+        '<section class="cartao">'
+        '<h2>Localização atual</h2>'
+        + (
+            '<ul>' + ''.join(descricoes) + '</ul>'
+            if descricoes
+            else '<p>Não há equipamentos cadastrados.</p>'
+        )
+        + '<a href="/recursos">'
+        'Voltar aos recursos</a>'
+        '</section>'
+    )
+
+    return layout(
+        "Vínculos de equipamentos",
+        corpo,
+        ator,
+        csrf
+    )
