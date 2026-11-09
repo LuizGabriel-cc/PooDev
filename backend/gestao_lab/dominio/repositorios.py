@@ -9,6 +9,9 @@ from .salas import Sala
 from .bancadas import Bancada
 from .equipamentos import Equipamento
 from .historico import HistoricoUso
+from .chaves import CopiaChave, DestinoChave, EmprestimoChave, ReservaAutorizada
+from decimal import Decimal
+from .estoque import ItemEstoque, MovimentacaoEstoque
 
 
 @dataclass(frozen=True)
@@ -147,6 +150,12 @@ class RepositorioReservas(ABC):
     """Contrato para criação e cancelamento de reservas."""
 
     @abstractmethod
+    def buscar(self, reserva_id, laboratorio_id) -> dict | None: ...
+
+    @abstractmethod
+    def disponibilidade(self, laboratorio_id, usuario_id, inicio, fim) -> list[dict]: ...
+
+    @abstractmethod
     def criar(
         self,
         usuario_id: int,
@@ -201,6 +210,102 @@ class RepositorioHistoricoUso(ABC):
 
 
 
+class RepositorioChaves(ABC):
+    @abstractmethod
+    def destinos(self, laboratorio_id) -> list[DestinoChave]: ...
+
+    @abstractmethod
+    def listar(self, laboratorio_id) -> list[CopiaChave]: ...
+
+    @abstractmethod
+    def buscar(self, chave_id, laboratorio_id) -> CopiaChave | None: ...
+
+    @abstractmethod
+    def criar(self, codigo, destino, ator_id, designada_para) -> int: ...
+
+    @abstractmethod
+    def designar(self, chave_id, ator_id, designada_para) -> None: ...
+
+    @abstractmethod
+    def reservas_autorizadas(self, copia) -> list[ReservaAutorizada]: ...
+
+    @abstractmethod
+    def emprestimos(self, laboratorio_id) -> list[EmprestimoChave]: ...
+
+    @abstractmethod
+    def buscar_emprestimo(self, emprestimo_id, laboratorio_id) -> EmprestimoChave | None: ...
+
+    @abstractmethod
+    def retirar(self, usuario_id, reserva_id, chave_id, ator_id) -> int: ...
+
+    @abstractmethod
+    def devolver(self, emprestimo_id, ator_id) -> None: ...
+
+    @abstractmethod
+    def registrar_ocorrencia(self, ator_id, chave_id, condicao, descricao) -> None: ...
+
+
+
+
+class RepositorioEstoque(ABC):
+
+    @abstractmethod
+    def criar(
+        self, chefe_id: int, item: ItemEstoque, motivo: str
+    ) -> ItemEstoque:
+        ...
+
+    @abstractmethod
+    def buscar(
+        self, item_id: int, laboratorio_id: int
+    ) -> ItemEstoque | None:
+        ...
+
+    @abstractmethod
+    def listar(
+        self, laboratorio_id: int
+    ) -> list[ItemEstoque]:
+        ...
+
+    @abstractmethod
+    def movimentar(
+        self, chefe_id: int, item_id: int,
+        variacao: Decimal, motivo: str
+    ) -> Decimal:
+        ...
+
+    @abstractmethod
+    def listar_movimentacoes(
+        self, laboratorio_id: int, item_id: int | None = None
+    ) -> list[MovimentacaoEstoque]:
+        ...
+
+
+    
+    @abstractmethod
+    def avaliar_alertas(
+        self,
+        laboratorio_id: int | None = None
+    ) -> int:
+        """Avalia estoque baixo e validade próxima."""
+        ...
+
+    @abstractmethod
+    def listar_alertas(
+        self,
+        laboratorio_id: int,
+        destinatario_id: int
+    ) -> list[dict]:
+        """Lista alertas ativos destinados ao Chefe."""
+        ...
+
+
+
+
+
+
+
+
 class RepositorioSessoes(ABC):
     @abstractmethod
     def criar(self, usuario_id: int, token_hash: bytes, expira_em: datetime) -> None: ...
@@ -224,6 +329,8 @@ class UnidadeTrabalho(ABC):
     reservas: RepositorioReservas
     sessoes: RepositorioSessoes
     historico: RepositorioHistoricoUso
+    chaves: RepositorioChaves
+    estoque: RepositorioEstoque
 
     @abstractmethod
     def contexto(self, ator_id: int | None, motivo: str) -> None: ...

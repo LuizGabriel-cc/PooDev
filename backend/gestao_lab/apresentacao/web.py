@@ -7,12 +7,13 @@ import logging
 import time
 
 from . import paginas
+from . import paginas_chaves
 from .csrf import ProtecaoCSRF
 from ..aplicacao.servicos import DadosCadastro
 from ..dominio.erros import AcessoNegado, CredenciaisInvalidas, DadosInvalidos, ErroAplicacao, FalhaPersistencia
 from ..dominio.usuarios import Perfil, Professor, ChefeLaboratorio
 from datetime import date, datetime, timedelta, timezone
-
+from . import paginas_estoque
 
 @dataclass
 class Resposta:
@@ -39,16 +40,19 @@ class LimiteLogin:
 
 
 class AplicacaoWeb:
-    def __init__(self, autenticacao, cadastro, configuracao, recursos=None, reservas=None, historico=None, limites=None):
+    def __init__(self, autenticacao, cadastro, configuracao, recursos=None, reservas=None, historico=None, limites=None, chaves=None, estoque=None):
         self._autenticacao = autenticacao
         self._cadastro = cadastro
         self._recursos = recursos
+        self._chaves = chaves
+        self._fuso = timezone(timedelta(hours=-3))
         self._reservas = reservas
         self._configuracao = configuracao
         self._csrf = ProtecaoCSRF(configuracao.segredo_csrf)
         self._limite = LimiteLogin()
         self._historico = historico
         self._limites = limites
+        self._estoque = estoque
 
     def __call__(self, environ, start_response):
         try:
@@ -117,7 +121,7 @@ class AplicacaoWeb:
                 "Selecione um cadastro válido."
             ) from erro
 
-        if numero <= 0:
+        if not 0 < numero <= 9223372036854775807:
             raise DadosInvalidos(
                 "Selecione um cadastro válido."
             )
@@ -179,6 +183,215 @@ class AplicacaoWeb:
             raise DadosInvalidos(
                 "Informe uma data válida no filtro."
             ) from erro
+
+
+
+
+    @staticmethod
+    def _ler_consulta(environ):
+        try:
+            parametros = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True, max_num_fields=10)
+        except ValueError as erro:
+            raise DadosInvalidos("Os parâmetros da página são inválidos.") from erro
+        if any(len(valores) != 1 for valores in parametros.values()):
+            raise DadosInvalidos("A página contém parâmetros duplicados.")
+        return {nome: valores[0] for nome, valores in parametros.items()}
+
+    def _rotear_chaves(self, rota, metodo, environ, campos, token, usuario, csrf):
+        if self._chaves is None:
+            raise FalhaPersistencia("Serviço de chaves indisponível.")
+        dados = self._ler_consulta(environ) if metodo == "GET" else campos
+        if rota == "/chaves":
+            if metodo != "GET":
+                return Resposta("Método não permitido.", 405, [("Allow", "GET")])
+            copias, destinos, emprestimos = self._chaves.painel(token)
+            mensagem = "Operação registrada." if dados.get("operacao") == "ok" else ""
+            return Resposta(paginas_chaves.painel(usuario, csrf, copias, destinos, emprestimos, self._fuso, mensagem))
+        mensagem = ""
+        chave_id = None
+        if rota not in {"/chaves/nova", "/chaves/devolver"}:
+            chave_id = self._identificador(dados.get("id") if metodo == "GET" else dados.get("chave_id"))
+        if rota == "/chaves/nova":
+            destinos, usuarios = self._chaves.dados_cadastro(token)
+        elif rota == "/chaves/devolver":
+            emprestimo_id = self._identificador(dados.get("id") if metodo == "GET" else dados.get("emprestimo_id"))
+            emprestimo = self._chaves.consultar_devolucao(token, emprestimo_id)
+        else:
+            copia, usuarios = self._chaves.consultar_gestao(token, chave_id)
+        if metodo == "POST":
+            try:
+                if rota == "/chaves/nova":
+                    self._chaves.cadastrar(token, codigo_copia=dados.get("codigo_copia", ""),
+                        destino_id=self._identificador(dados.get("destino_id")),
+                        designada_para=self._identificador(dados["designada_para"]) if dados.get("designada_para") else None)
+                elif rota == "/chaves/designar":
+                    self._chaves.designar(token, chave_id,
+                        self._identificador(dados["designada_para"]) if dados.get("designada_para") else None)
+                elif rota == "/chaves/retirar":
+                    self._chaves.retirar(token, chave_id, self._identificador(dados.get("reserva_id")))
+                elif rota == "/chaves/devolver":
+                    self._chaves.devolver(token, emprestimo_id)
+                elif rota == "/chaves/ocorrencia":
+                    self._chaves.registrar_ocorrencia(token, chave_id, condicao=dados.get("condicao"), descricao=dados.get("descricao", ""))
+                return self._redirecionar("/chaves?operacao=ok")
+            except (AcessoNegado, FalhaPersistencia):
+                raise
+            except ErroAplicacao as erro:
+                mensagem = str(erro)
+        if rota == "/chaves/nova":
+            pagina = paginas_chaves.nova(usuario, csrf, destinos, usuarios, dados, mensagem)
+        elif rota == "/chaves/designar":
+            pagina = paginas_chaves.designar(usuario, csrf, copia, usuarios, dados if metodo == "POST" else None, mensagem)
+        elif rota == "/chaves/ocorrencia":
+            pagina = paginas_chaves.ocorrencia(usuario, csrf, copia, dados, mensagem)
+        elif rota == "/chaves/devolver":
+            pagina = paginas_chaves.devolver(usuario, csrf, emprestimo, mensagem)
+        else:
+            if mensagem:
+                # A cópia pode ter sido retirada em outra sessão enquanto o formulário estava aberto.
+                return Resposta(paginas.layout("Retirada não registrada", paginas.aviso(mensagem, True) + '<p><a href="/chaves">Voltar às chaves</a></p>', usuario, csrf), 400)
+            copia, reservas = self._chaves.opcoes_retirada(token, chave_id)
+            pagina = paginas_chaves.retirar(usuario, csrf, copia, reservas, self._fuso, dados, mensagem)
+        return Resposta(pagina, 400 if mensagem else 200)
+
+    def _rotear_localizacao(self, metodo, environ, campos, token, usuario, csrf):
+        if self._recursos is None:
+            raise FalhaPersistencia("Serviço de recursos indisponível.")
+        dados = self._ler_consulta(environ) if metodo == "GET" else campos
+        equipamento_id = self._identificador(dados.get("id") if metodo == "GET" else dados.get("equipamento_id"))
+        equipamento = self._recursos.consultar_localizacao(token, equipamento_id)
+        mensagem = ""
+        if metodo == "POST":
+            try:
+                self._recursos.alterar_localizacao(token, equipamento_id,
+                    bancada_id=self._identificador(dados["bancada_id"]) if dados.get("bancada_id") else None,
+                    sala_direta_id=self._identificador(dados["sala_direta_id"]) if dados.get("sala_direta_id") else None,
+                    complemento_local=dados.get("complemento_local", ""))
+                return self._redirecionar("/recursos?local=ok")
+            except DadosInvalidos as erro:
+                mensagem = str(erro)
+        salas, bancadas, _ = self._recursos.listar(token)
+        return Resposta(paginas.formulario_localizacao(usuario, csrf, equipamento, salas, bancadas,
+                        dados if metodo == "POST" else None, mensagem), 400 if mensagem else 200)
+
+
+    
+    def _rotear_estoque(
+        self, metodo, environ, campos, token, usuario, csrf
+    ):
+        if not isinstance(usuario, ChefeLaboratorio):
+            raise AcessoNegado(
+                "Somente o Chefe pode gerenciar o estoque."
+            )
+
+        if self._estoque is None:
+            raise FalhaPersistencia(
+                "Serviço de estoque indisponível."
+            )
+
+        mensagem = ""
+        erro_formulario = False
+
+        if metodo == "POST":
+            try:
+                acao = campos.get("acao", "")
+
+                if acao == "cadastrar":
+                    texto_validade = campos.get(
+                        "validade", ""
+                    ).strip()
+
+                    try:
+                        validade = (
+                            date.fromisoformat(texto_validade)
+                            if texto_validade else None
+                        )
+                    except ValueError as erro:
+                        raise DadosInvalidos(
+                            "Informe uma validade válida."
+                        ) from erro
+
+                    self._estoque.cadastrar(
+                        token,
+                        nome=campos.get("nome", ""),
+                        unidade=campos.get("unidade", ""),
+                        lote=campos.get("lote", ""),
+                        quantidade=campos.get("quantidade", ""),
+                        limite_estoque_baixo=campos.get(
+                            "limite_estoque_baixo", ""
+                        ),
+                        validade=validade
+                    )
+
+                    return self._redirecionar(
+                        "/estoque?resultado=cadastro"
+                    )
+
+                elif acao == "movimentar":
+                    item_id = self._identificador(
+                        campos.get("item_id")
+                    )
+
+                    self._estoque.movimentar(
+                        token,
+                        item_id=item_id,
+                        variacao=campos.get("variacao", ""),
+                        motivo=campos.get("motivo", "")
+                    )
+
+                    return self._redirecionar(
+                        "/estoque?resultado=movimentacao"
+                    )
+
+                else:
+                    raise DadosInvalidos(
+                        "Operação de estoque inválida."
+                    )
+
+            except (AcessoNegado, FalhaPersistencia):
+                raise
+
+            except ErroAplicacao as erro:
+                mensagem = str(erro)
+                erro_formulario = True
+
+        elif metodo != "GET":
+            return Resposta(
+                "Método não permitido.", 405,
+                [("Allow", "GET, POST")]
+            )
+
+        itens = self._estoque.listar(token)
+        
+        movimentacoes = (
+            self._estoque.listar_movimentacoes(token)
+            
+        )
+
+        alertas = self._estoque.listar_alertas(token)
+        
+
+        if metodo == "GET":
+            resultado = self._ler_consulta(
+                environ
+            ).get("resultado", "")
+
+            mensagem = {
+                "cadastro": "Item cadastrado com sucesso.",
+                "movimentacao":
+                    "Movimentação registrada com sucesso."
+            }.get(resultado, "")
+
+        return Resposta(
+            paginas_estoque.painel(
+                usuario, csrf, itens, movimentacoes,
+                mensagem=mensagem,
+                erro=erro_formulario,
+                dados=campos if metodo == "POST" else None,
+                alertas=alertas
+            ),
+            400 if erro_formulario else 200
+        )
 
 
 
@@ -249,6 +462,14 @@ class AplicacaoWeb:
             "/historico",
             "/limites-reserva",
             "/recursos/vinculos",
+            "/recursos/localizacao",
+            "/chaves",
+            "/chaves/nova",
+            "/chaves/designar",
+            "/chaves/retirar",
+            "/chaves/devolver",
+            "/chaves/ocorrencia",
+            "/estoque",
             "/sair",
         }:
             return Resposta(
@@ -267,6 +488,10 @@ class AplicacaoWeb:
             campos = self._ler_formulario(environ)
             if not self._csrf.validar_sessao(token, campos.get("csrf", "")):
                 raise AcessoNegado("O formulário expirou. Abra a página novamente.")
+        if rota.startswith("/chaves"):
+            return self._rotear_chaves(rota, metodo, environ, campos if metodo == "POST" else {}, token, usuario, csrf)
+        if rota == "/recursos/localizacao":
+            return self._rotear_localizacao(metodo, environ, campos if metodo == "POST" else {}, token, usuario, csrf)
         if rota == "/sair":
             if metodo != "POST":
                 return Resposta("Use o botão Sair.", 405, [("Allow", "POST")])
@@ -600,7 +825,8 @@ class AplicacaoWeb:
                     else:
                         self._recursos.desvincular_equipamento(
                             token,
-                            equipamento_id=equipamento_id
+                            equipamento_id=equipamento_id,
+                            complemento_local=complemento
                         )
 
                     return self._redirecionar(
@@ -644,7 +870,18 @@ class AplicacaoWeb:
                 ),
                 400 if mensagem else 200
             )
-
+        
+        
+        
+        if rota == "/estoque":
+            return self._rotear_estoque(
+                metodo,
+                environ,
+                campos if metodo == "POST" else {},
+                token,
+                usuario,
+                csrf
+            )
 
 
         
@@ -656,6 +893,14 @@ class AplicacaoWeb:
                 )
 
             mensagem = ""
+            disponibilidade = None
+            dados_consulta = self._ler_consulta(environ) if metodo == "GET" else campos
+            if metodo == "GET" and (dados_consulta.get("inicio") or dados_consulta.get("fim")):
+                try:
+                    disponibilidade = self._reservas.disponibilidade(token,
+                        self._data_hora_reserva(dados_consulta.get("inicio")), self._data_hora_reserva(dados_consulta.get("fim")))
+                except DadosInvalidos as erro:
+                    mensagem = str(erro)
 
             # Processa o formulário enviado.
             if metodo == "POST":
@@ -715,9 +960,10 @@ class AplicacaoWeb:
                     salas,
                     bancadas,
                     equipamentos,
-                    dados=campos if metodo == "POST" else None,
+                    dados=dados_consulta,
                     mensagem=mensagem,
-                    sucesso=sucesso
+                    sucesso=sucesso,
+                    disponibilidade=disponibilidade
                 ),
                 400 if mensagem else 200
             )
@@ -807,7 +1053,7 @@ class AplicacaoWeb:
             "/cadastros/bancada",
             "/cadastros/equipamento",
         }:
-            if not isinstance(usuario, ChefeLaboratorio):
+            if rota != "/recursos" and not isinstance(usuario, ChefeLaboratorio):
                 raise AcessoNegado(
                     "Somente o Chefe pode gerenciar recursos."
                 )
@@ -844,6 +1090,7 @@ class AplicacaoWeb:
                 )
 
             mensagem = ""
+            responsaveis = self._recursos.responsaveis(token)
 
             if metodo == "POST":
                 try:
@@ -857,6 +1104,7 @@ class AplicacaoWeb:
                             localizacao=campos.get(
                                 "localizacao", ""
                             ),
+                            responsavel_id=self._identificador(campos["responsavel_id"]) if campos.get("responsavel_id") else None,
                             capacidade=self._identificador(
                                 campos.get("capacidade")
                             )
@@ -869,6 +1117,7 @@ class AplicacaoWeb:
                             numero_identificacao=campos.get(
                                 "numero_identificacao", ""
                             ),
+                            responsavel_id=self._identificador(campos["responsavel_id"]) if campos.get("responsavel_id") else None,
                             sala_id=self._identificador(
                                 campos.get("sala_id")
                             )
@@ -900,6 +1149,7 @@ class AplicacaoWeb:
                             complemento_local=campos.get(
                                 "complemento_local", ""
                             ),
+                            responsavel_id=self._identificador(campos["responsavel_id"]) if campos.get("responsavel_id") else None,
                             bancada_id=bancada_id,
                             sala_direta_id=sala_id,
                             foto_uri=campos.get("foto_uri") or None,
@@ -928,7 +1178,7 @@ class AplicacaoWeb:
             if rota == "/cadastros/sala":
                 return Resposta(
                     paginas.formulario_sala(
-                        usuario, csrf, dados, mensagem
+                        usuario, csrf, dados, mensagem, responsaveis
                     ),
                     status
                 )
@@ -936,7 +1186,7 @@ class AplicacaoWeb:
             if rota == "/cadastros/bancada":
                 return Resposta(
                     paginas.formulario_bancada(
-                        usuario, csrf, salas, dados, mensagem
+                        usuario, csrf, salas, dados, mensagem, responsaveis
                     ),
                     status
                 )
@@ -945,7 +1195,7 @@ class AplicacaoWeb:
                 return Resposta(
                     paginas.formulario_equipamento(
                         usuario, csrf,
-                        salas, bancadas, dados, mensagem
+                        salas, bancadas, dados, mensagem, responsaveis
                     ),
                     status
                 )

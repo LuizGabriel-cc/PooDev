@@ -12,6 +12,9 @@ from ..dominio.repositorios import UnidadeTrabalho
 from ..dominio.usuarios import Aluno, ChefeLaboratorio, Perfil, Professor, TipoAluno, Usuario, normalizar_email, texto_obrigatorio
 from ..dominio.reservas import Reserva
 from ..dominio.historico import HistoricoUso
+from decimal import Decimal
+from datetime import date
+from ..dominio.estoque import ItemEstoque, _quantidade
 
 FabricaTransacao = Callable[[], UnidadeTrabalho]
 
@@ -594,12 +597,44 @@ class ServicoRecursos:
 
 
     
-    def listar(self, token: str):
+    def responsaveis(self, token):
         with self._transacao() as tx:
             chefe = self._exigir_chefe(tx, token)
+            return [u for u in tx.usuarios.listar(chefe.laboratorio_id) if isinstance(u, Professor) and u.ativo]
+
+    def consultar_localizacao(self, token, equipamento_id):
+        with self._transacao() as tx:
+            chefe = self._exigir_chefe(tx, token)
+            return self._buscar_equipamento(tx, equipamento_id, chefe.laboratorio_id)
+
+    def alterar_localizacao(self, token, equipamento_id, *, bancada_id=None, sala_direta_id=None, complemento_local):
+        with self._transacao() as tx:
+            chefe = self._exigir_chefe(tx, token)
+            equipamento = self._buscar_equipamento(tx, equipamento_id, chefe.laboratorio_id)
+            if (bancada_id is None) == (sala_direta_id is None):
+                raise DadosInvalidos("Informe uma bancada ou uma sala, mas não ambas.")
+            if bancada_id is not None:
+                if type(bancada_id) is not int or bancada_id <= 0:
+                    raise DadosInvalidos("Selecione uma bancada válida.")
+                bancada = tx.recursos.buscar_bancada(bancada_id)
+                if bancada is None or bancada.laboratorio_id != chefe.laboratorio_id:
+                    raise DadosInvalidos("Bancada não encontrada neste laboratório.")
+                sala = self._buscar_sala(tx, bancada.sala_id, chefe.laboratorio_id)
+            else:
+                sala = self._buscar_sala(tx, sala_direta_id, chefe.laboratorio_id)
+            atualizado = replace(equipamento, bancada_id=bancada_id, sala_direta_id=sala_direta_id,
+                                  complemento_local=complemento_local, localizacao=sala.localizacao)
+            tx.recursos.alterar_local_equipamento(chefe.id, atualizado)
+            return atualizado
+
+    def listar(self, token: str):
+        with self._transacao() as tx:
+            ator = self._autenticacao.identificar_na_transacao(tx, token)
+            if ator is None:
+                raise AcessoNegado("Entre novamente para continuar.")
 
             salas = tx.recursos.listar_salas(
-                chefe.laboratorio_id
+                ator.laboratorio_id
             )
 
             bancadas = [
@@ -609,7 +644,7 @@ class ServicoRecursos:
             ]
 
             equipamentos = tx.recursos.listar_equipamentos(
-                chefe.laboratorio_id
+                ator.laboratorio_id
             )
 
             return salas, bancadas, equipamentos
@@ -725,6 +760,24 @@ class ServicoReservas:
 
 
 
+    @staticmethod
+    def _validar_periodo(inicio, fim):
+        for valor in (inicio, fim):
+            if not isinstance(valor, datetime) or valor.utcoffset() is None:
+                raise DadosInvalidos("Informe início e fim com fuso horário.")
+        if fim <= inicio:
+            raise DadosInvalidos("O fim deve ser posterior ao início.")
+        if inicio < datetime.now(timezone.utc):
+            raise DadosInvalidos("A reserva deve começar em um horário futuro.")
+
+    def disponibilidade(self, token, inicio, fim):
+        self._validar_periodo(inicio, fim)
+        with self._transacao() as tx:
+            ator, laboratorio = self._identificar(tx, token)
+            if laboratorio.duracao_maxima_reserva is not None and fim - inicio > laboratorio.duracao_maxima_reserva:
+                raise DadosInvalidos("A duração excede o limite do laboratório.")
+            return tx.reservas.disponibilidade(laboratorio.id, ator.id, inicio, fim)
+
     def reservar(
         self,
         token: str,
@@ -733,7 +786,7 @@ class ServicoReservas:
         inicio: datetime,
         fim: datetime
     ) -> int:
-
+        self._validar_periodo(inicio, fim)
         with self._transacao() as tx:
             # 1. Identifica quem está reservando.
             ator, laboratorio = self._identificar(
@@ -830,6 +883,13 @@ class ServicoReservas:
         # 2. Identifica o usuário autenticado.
         with self._transacao() as tx:
             ator, _ = self._identificar(tx, token)
+            reserva = tx.reservas.buscar(reserva_id, ator.laboratorio_id)
+            if reserva is None:
+                raise DadosInvalidos("Reserva não encontrada neste laboratório.")
+            if reserva["usuario_id"] != ator.id and not isinstance(ator, ChefeLaboratorio):
+                raise AcessoNegado("Somente o titular ou o Chefe pode cancelar esta reserva.")
+            if reserva["estado"] != "CONFIRMADA" or reserva["fim"] <= datetime.now(timezone.utc):
+                raise DadosInvalidos("Esta reserva já está encerrada.")
 
             # 3. Registra o contexto da operação.
             tx.contexto(
@@ -1072,7 +1132,7 @@ class ServicoLimitesReserva:
         # Validação da quantidade.
         if quantidade is not None and (
             type(quantidade) is not int
-            or quantidade <= 0
+            or not 0 < quantidade <= 2147483647
         ):
             raise DadosInvalidos(
                 "Informe uma quantidade positiva."
@@ -1112,4 +1172,232 @@ class ServicoLimitesReserva:
                 ator.id,
                 atualizado.duracao_maxima_reserva,
                 atualizado.max_reservas_simultaneas
+            )
+
+
+
+
+class ServicoEstoque:
+    """Cadastro, consulta e movimentação de estoque."""
+
+    def __init__(
+        self,
+        transacao: FabricaTransacao,
+        autenticacao: ServicoAutenticacao
+    ):
+        self._transacao = transacao
+        self._autenticacao = autenticacao
+
+    def _exigir_chefe(self, tx, token):
+        ator = self._autenticacao.identificar_na_transacao(
+            tx, token
+        )
+
+        if (
+            not isinstance(ator, ChefeLaboratorio)
+            or not ator.ativo
+            or ator.id is None
+        ):
+            raise AcessoNegado(
+                "Somente o Chefe pode gerenciar o estoque."
+            )
+
+        laboratorio = tx.laboratorios.buscar_por_id(
+            ator.laboratorio_id
+        )
+
+        if (
+            laboratorio is None
+            or not laboratorio.ativo
+            or laboratorio.chefe_usuario_id != ator.id
+        ):
+            raise AcessoNegado(
+                "Chefe não autorizado neste laboratório."
+            )
+
+        return ator, laboratorio
+
+    def listar(self, token: str) -> list[ItemEstoque]:
+        with self._transacao() as tx:
+            _, laboratorio = self._exigir_chefe(tx, token)
+            return tx.estoque.listar(laboratorio.id)
+
+    def consultar(self, token: str, item_id: int) -> ItemEstoque:
+        if type(item_id) is not int or item_id <= 0:
+            raise DadosInvalidos("Item inválido.")
+
+        with self._transacao() as tx:
+            _, laboratorio = self._exigir_chefe(tx, token)
+
+            item = tx.estoque.buscar(
+                item_id, laboratorio.id
+            )
+
+            if item is None:
+                raise DadosInvalidos(
+                    "Item não encontrado neste laboratório."
+                )
+
+            return item
+
+    def cadastrar(
+        self,
+        token: str,
+        *,
+        nome: str,
+        unidade: str,
+        lote: str = "SEM_LOTE",
+        quantidade: Decimal | int | str = "0",
+        limite_estoque_baixo: Decimal | int | str = "0",
+        validade: date | None = None
+    ) -> ItemEstoque:
+
+        with self._transacao() as tx:
+            chefe, laboratorio = self._exigir_chefe(
+                tx, token
+            )
+
+            item = ItemEstoque(
+                laboratorio_id=laboratorio.id,
+                nome=nome,
+                unidade=unidade,
+                lote=lote,
+                quantidade=quantidade,
+                limite_estoque_baixo=limite_estoque_baixo,
+                validade=validade
+            )
+
+            tx.contexto(
+                chefe.id,
+                "Cadastro de item de estoque"
+            )
+
+            
+            salvo = tx.estoque.criar(
+                chefe.id,
+                item,
+                "Cadastro inicial de estoque"
+            )
+
+            # Verifica automaticamente estoque e validade.
+            tx.estoque.avaliar_alertas(laboratorio.id)
+
+            return salvo
+
+
+    def movimentar(
+        self,
+        token: str,
+        *,
+        item_id: int,
+        variacao: Decimal | int | str,
+        motivo: str
+    ) -> Decimal:
+
+        if type(item_id) is not int or item_id <= 0:
+            raise DadosInvalidos("Item inválido.")
+
+        variacao = _quantidade(
+            variacao,
+            "Variação",
+            permitir_negativo=True
+        )
+
+        if variacao == 0:
+            raise DadosInvalidos(
+                "A movimentação não pode ser zero."
+            )
+
+        if not isinstance(motivo, str):
+            raise DadosInvalidos(
+                "Informe um motivo válido."
+            )
+
+        motivo = texto_obrigatorio(
+            motivo, "Motivo", 500
+        )
+
+        with self._transacao() as tx:
+            chefe, laboratorio = self._exigir_chefe(
+                tx, token
+            )
+
+            item = tx.estoque.buscar(
+                item_id, laboratorio.id
+            )
+
+            if item is None or not item.ativo:
+                raise DadosInvalidos(
+                    "Item inexistente ou inativo."
+                )
+
+            if item.quantidade + variacao < 0:
+                raise DadosInvalidos(
+                    "Estoque insuficiente para esta saída."
+                )
+
+            tx.contexto(
+                chefe.id,
+                motivo
+            )
+
+            
+            saldo = tx.estoque.movimentar(
+                chefe.id,
+                item.id,
+                variacao,
+                motivo
+            )
+
+            # Reavalia os alertas após a movimentação.
+            tx.estoque.avaliar_alertas(laboratorio.id)
+
+            return saldo
+
+
+    def listar_movimentacoes(
+        self,
+        token: str,
+        *,
+        item_id: int | None = None
+    ):
+        if item_id is not None and (
+            type(item_id) is not int or item_id <= 0
+        ):
+            raise DadosInvalidos("Item inválido.")
+
+        with self._transacao() as tx:
+            _, laboratorio = self._exigir_chefe(
+                tx, token
+            )
+
+            if item_id is not None:
+                item = tx.estoque.buscar(
+                    item_id, laboratorio.id
+                )
+
+                if item is None:
+                    raise DadosInvalidos(
+                        "Item não encontrado."
+                    )
+
+            return tx.estoque.listar_movimentacoes(
+                laboratorio.id,
+                item_id
+            )
+
+
+
+
+    
+    def listar_alertas(self, token: str) -> list[dict]:
+
+        with self._transacao() as tx:
+            chefe, laboratorio = self._exigir_chefe(
+                tx, token
+            )
+
+            return tx.estoque.listar_alertas(
+                laboratorio.id,
+                chefe.id
             )

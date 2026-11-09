@@ -11,7 +11,10 @@ from .infraestrutura.postgres import UnidadeTrabalhoPostgres
 from .aplicacao.servicos import ServicoReservas
 from .aplicacao.servicos import ServicoHistoricoUso
 from .aplicacao.servicos import ServicoLimitesReserva
-
+from .aplicacao.chaves import ServicoChaves
+from .aplicacao.servicos import ServicoEstoque
+import logging
+from threading import Event, Thread
 
 class AtendimentoLocal(WSGIRequestHandler):
     def setup(self):
@@ -28,6 +31,38 @@ def pedir_senha():
     if senha != getpass("Confirmar senha: "):
         raise DadosInvalidos("As senhas informadas são diferentes.")
     return senha
+
+
+
+def iniciar_monitoramento_estoque(transacao):
+    parada = Event()
+
+    def verificar():
+        while not parada.is_set():
+            try:
+                with transacao() as tx:
+                    tx.estoque.avaliar_alertas()
+
+            except Exception as erro:
+                logging.getLogger(__name__).warning(
+                    "Falha ao verificar alertas: %s",
+                    type(erro).__name__
+                )
+
+            # Intervalo de 10 minutos.
+            parada.wait(600)
+
+    trabalhador = Thread(
+        target=verificar,
+        name="monitor-estoque",
+        daemon=True
+    )
+
+    trabalhador.start()
+    return parada
+
+
+
 
 
 def main():
@@ -60,12 +95,30 @@ def main():
             reservas = ServicoReservas(transacao, autenticacao)
             historico = ServicoHistoricoUso(transacao, autenticacao)
             limites = ServicoLimitesReserva(transacao, autenticacao)
-            app = AplicacaoWeb(autenticacao, cadastro, config, recursos=recursos, reservas=reservas, historico=historico, limites=limites)
+            chaves = ServicoChaves(transacao, autenticacao)
+            estoque = ServicoEstoque(transacao, autenticacao)
+            app = AplicacaoWeb(autenticacao, cadastro, config, recursos=recursos, reservas=reservas, historico=historico, limites=limites, chaves=chaves, estoque=estoque)
 
             # O servidor de referência atende a demonstração local; a interface é WSGI.
-            with make_server("127.0.0.1", config.porta, app, handler_class=AtendimentoLocal) as servidor:
-                print(f"Abra http://127.0.0.1:{config.porta} — Ctrl+C para encerrar.")
+            
+        parada_alertas = iniciar_monitoramento_estoque(transacao)
+
+        try:
+            with make_server(
+                "127.0.0.1",
+                config.porta,
+                app,
+                handler_class=AtendimentoLocal
+            ) as servidor:
+                print(
+                    f"Abra http://127.0.0.1:{config.porta}"
+                    " — Ctrl+C para encerrar."
+                )
                 servidor.serve_forever()
+
+        finally:
+            parada_alertas.set()
+
     except (ErroAplicacao, OSError) as erro:
         if isinstance(erro, ErroAplicacao):
             parser.exit(1, f"Erro: {erro}\n")
@@ -75,4 +128,4 @@ def main():
 
 
 if __name__ == "__main__":
-                main()
+    main()
