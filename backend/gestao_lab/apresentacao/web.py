@@ -13,7 +13,7 @@ from ..aplicacao.servicos import DadosCadastro
 from ..dominio.erros import AcessoNegado, CredenciaisInvalidas, DadosInvalidos, ErroAplicacao, FalhaPersistencia
 from ..dominio.usuarios import Perfil, Professor, ChefeLaboratorio
 from datetime import date, datetime, timedelta, timezone
-
+from . import paginas_estoque
 
 @dataclass
 class Resposta:
@@ -40,7 +40,7 @@ class LimiteLogin:
 
 
 class AplicacaoWeb:
-    def __init__(self, autenticacao, cadastro, configuracao, recursos=None, reservas=None, historico=None, limites=None, chaves=None):
+    def __init__(self, autenticacao, cadastro, configuracao, recursos=None, reservas=None, historico=None, limites=None, chaves=None, estoque=None):
         self._autenticacao = autenticacao
         self._cadastro = cadastro
         self._recursos = recursos
@@ -52,6 +52,7 @@ class AplicacaoWeb:
         self._limite = LimiteLogin()
         self._historico = historico
         self._limites = limites
+        self._estoque = estoque
 
     def __call__(self, environ, start_response):
         try:
@@ -273,6 +274,128 @@ class AplicacaoWeb:
         return Resposta(paginas.formulario_localizacao(usuario, csrf, equipamento, salas, bancadas,
                         dados if metodo == "POST" else None, mensagem), 400 if mensagem else 200)
 
+
+    
+    def _rotear_estoque(
+        self, metodo, environ, campos, token, usuario, csrf
+    ):
+        if not isinstance(usuario, ChefeLaboratorio):
+            raise AcessoNegado(
+                "Somente o Chefe pode gerenciar o estoque."
+            )
+
+        if self._estoque is None:
+            raise FalhaPersistencia(
+                "Serviço de estoque indisponível."
+            )
+
+        mensagem = ""
+        erro_formulario = False
+
+        if metodo == "POST":
+            try:
+                acao = campos.get("acao", "")
+
+                if acao == "cadastrar":
+                    texto_validade = campos.get(
+                        "validade", ""
+                    ).strip()
+
+                    try:
+                        validade = (
+                            date.fromisoformat(texto_validade)
+                            if texto_validade else None
+                        )
+                    except ValueError as erro:
+                        raise DadosInvalidos(
+                            "Informe uma validade válida."
+                        ) from erro
+
+                    self._estoque.cadastrar(
+                        token,
+                        nome=campos.get("nome", ""),
+                        unidade=campos.get("unidade", ""),
+                        lote=campos.get("lote", ""),
+                        quantidade=campos.get("quantidade", ""),
+                        limite_estoque_baixo=campos.get(
+                            "limite_estoque_baixo", ""
+                        ),
+                        validade=validade
+                    )
+
+                    return self._redirecionar(
+                        "/estoque?resultado=cadastro"
+                    )
+
+                elif acao == "movimentar":
+                    item_id = self._identificador(
+                        campos.get("item_id")
+                    )
+
+                    self._estoque.movimentar(
+                        token,
+                        item_id=item_id,
+                        variacao=campos.get("variacao", ""),
+                        motivo=campos.get("motivo", "")
+                    )
+
+                    return self._redirecionar(
+                        "/estoque?resultado=movimentacao"
+                    )
+
+                else:
+                    raise DadosInvalidos(
+                        "Operação de estoque inválida."
+                    )
+
+            except (AcessoNegado, FalhaPersistencia):
+                raise
+
+            except ErroAplicacao as erro:
+                mensagem = str(erro)
+                erro_formulario = True
+
+        elif metodo != "GET":
+            return Resposta(
+                "Método não permitido.", 405,
+                [("Allow", "GET, POST")]
+            )
+
+        itens = self._estoque.listar(token)
+        
+        movimentacoes = (
+            self._estoque.listar_movimentacoes(token)
+            
+        )
+
+        alertas = self._estoque.listar_alertas(token)
+        
+
+        if metodo == "GET":
+            resultado = self._ler_consulta(
+                environ
+            ).get("resultado", "")
+
+            mensagem = {
+                "cadastro": "Item cadastrado com sucesso.",
+                "movimentacao":
+                    "Movimentação registrada com sucesso."
+            }.get(resultado, "")
+
+        return Resposta(
+            paginas_estoque.painel(
+                usuario, csrf, itens, movimentacoes,
+                mensagem=mensagem,
+                erro=erro_formulario,
+                dados=campos if metodo == "POST" else None,
+                alertas=alertas
+            ),
+            400 if erro_formulario else 200
+        )
+
+
+
+
     def _rotear(self, environ):
         porta = self._configuracao.porta
         host = environ.get("HTTP_HOST", "")
@@ -346,6 +469,7 @@ class AplicacaoWeb:
             "/chaves/retirar",
             "/chaves/devolver",
             "/chaves/ocorrencia",
+            "/estoque",
             "/sair",
         }:
             return Resposta(
@@ -746,7 +870,18 @@ class AplicacaoWeb:
                 ),
                 400 if mensagem else 200
             )
-
+        
+        
+        
+        if rota == "/estoque":
+            return self._rotear_estoque(
+                metodo,
+                environ,
+                campos if metodo == "POST" else {},
+                token,
+                usuario,
+                csrf
+            )
 
 
         

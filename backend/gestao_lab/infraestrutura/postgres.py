@@ -15,6 +15,9 @@ from ..dominio.equipamentos import Equipamento
 from ..dominio.historico import HistoricoUso
 from ..dominio.repositorios import RepositorioHistoricoUso
 from .chaves_postgres import ChavesPostgres, ConsultaHistoricoSemana4
+from decimal import Decimal
+from ..dominio.estoque import ItemEstoque, MovimentacaoEstoque
+from ..dominio.repositorios import RepositorioEstoque
 
 
 CONSULTA_USUARIOS = """
@@ -794,6 +797,160 @@ def traduzir_erro(erro: psycopg.Error) -> Exception:
 
 
 
+class EstoquePostgres(RepositorioEstoque):
+
+    def __init__(self, conexao):
+        self._conexao = conexao
+
+    def criar(self, chefe_id, item, motivo):
+        if not isinstance(item, ItemEstoque) or item.id is not None:
+            raise DadosInvalidos("Item de estoque inválido.")
+
+        if not isinstance(motivo, str) or not motivo.strip():
+            raise DadosInvalidos("Informe o motivo do cadastro.")
+
+        # Confirma autorização do Chefe.
+        self._conexao.execute(
+            "SELECT gestao_lab.exigir_chefe(%s, %s)",
+            (chefe_id, item.laboratorio_id)
+        )
+
+        # Necessário para auditar o estoque inicial.
+        self._conexao.execute(
+            "SELECT gestao_lab.contexto_operacao(%s, %s)",
+            (chefe_id, motivo.strip())
+        )
+
+        resultado = self._conexao.execute("""
+            INSERT INTO gestao_lab.item_estoque (
+                laboratorio_id, nome, lote, unidade,
+                quantidade, limite_estoque_baixo,
+                validade, ativo
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING *
+        """, (
+            item.laboratorio_id,
+            item.nome,
+            item.lote,
+            item.unidade,
+            item.quantidade,
+            item.limite_estoque_baixo,
+            item.validade,
+            item.ativo
+        ))
+
+        return ItemEstoque(**resultado.fetchone())
+
+    def buscar(self, item_id, laboratorio_id):
+        resultado = self._conexao.execute("""
+            SELECT *
+            FROM gestao_lab.item_estoque
+            WHERE id = %s AND laboratorio_id = %s
+        """, (item_id, laboratorio_id))
+
+        linha = resultado.fetchone()
+        return ItemEstoque(**linha) if linha else None
+
+    def listar(self, laboratorio_id):
+        resultado = self._conexao.execute("""
+            SELECT *
+            FROM gestao_lab.item_estoque
+            WHERE laboratorio_id = %s
+            ORDER BY nome, lote, id
+        """, (laboratorio_id,))
+
+        return [
+            ItemEstoque(**linha)
+            for linha in resultado.fetchall()
+        ]
+
+    def movimentar(self, chefe_id, item_id, variacao, motivo):
+        resultado = self._conexao.execute("""
+            SELECT gestao_lab.movimentar_estoque(
+                %s, %s, %s, %s
+            ) AS quantidade
+        """, (
+            chefe_id,
+            item_id,
+            variacao,
+            motivo
+        ))
+
+        return Decimal(
+            resultado.fetchone()["quantidade"]
+        )
+
+    def listar_movimentacoes(self, laboratorio_id, item_id=None):
+        resultado = self._conexao.execute("""
+            SELECT
+                id, laboratorio_id, item_id,
+                registrado_por, variacao,
+                quantidade_anterior, quantidade_posterior,
+                motivo, criado_em
+            FROM gestao_lab.movimentacao_estoque
+            WHERE laboratorio_id = %s
+              AND (
+                  %s::bigint IS NULL
+                  OR item_id = %s
+              )
+            ORDER BY criado_em DESC, id DESC
+            LIMIT 100
+        """, (
+            laboratorio_id,
+            item_id,
+            item_id
+        ))
+
+        return [
+            MovimentacaoEstoque(**linha)
+            for linha in resultado.fetchall()
+        ]
+
+
+
+    
+    def avaliar_alertas(self, laboratorio_id=None) -> int:
+        resultado = self._conexao.execute("""
+            SELECT gestao_lab.avaliar_alertas_estoque(
+                %s::bigint
+            ) AS total
+        """, (laboratorio_id,))
+
+        return int(resultado.fetchone()["total"])
+
+    def listar_alertas(
+        self,
+        laboratorio_id,
+        destinatario_id
+    ) -> list[dict]:
+
+        resultado = self._conexao.execute("""
+            SELECT
+                id,
+                tipo,
+                mensagem,
+                criado_em,
+                lida_em
+            FROM gestao_lab.notificacao
+            WHERE laboratorio_id = %s
+              AND destinatario_id = %s
+              AND tipo IN ('ESTOQUE_BAIXO', 'VALIDADE')
+              AND chave_deduplicacao IS NOT NULL
+            ORDER BY criado_em DESC, id DESC
+            LIMIT 50
+        """, (
+            laboratorio_id,
+            destinatario_id
+        ))
+
+        return resultado.fetchall()
+
+
+
+
+
+
 class UnidadeTrabalhoPostgres(UnidadeTrabalho):
     def __init__(self, database_url: str):
         self._database_url = database_url
@@ -815,6 +972,7 @@ class UnidadeTrabalhoPostgres(UnidadeTrabalho):
         self.historico = HistoricoUsoPostgres(self._conexao)
         self.chaves = ChavesPostgres(self._conexao)
         self.sessoes = SessoesPostgres(self._conexao)
+        self.estoque = EstoquePostgres(self._conexao)
         return self
 
     def contexto(self, ator_id, motivo):

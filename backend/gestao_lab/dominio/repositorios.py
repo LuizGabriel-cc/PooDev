@@ -10,6 +10,8 @@ from .bancadas import Bancada
 from .equipamentos import Equipamento
 from .historico import HistoricoUso
 from .chaves import CopiaChave, DestinoChave, EmprestimoChave, ReservaAutorizada
+from decimal import Decimal
+from .estoque import ItemEstoque, MovimentacaoEstoque
 
 
 @dataclass(frozen=True)
@@ -243,6 +245,67 @@ class RepositorioChaves(ABC):
     def registrar_ocorrencia(self, ator_id, chave_id, condicao, descricao) -> None: ...
 
 
+
+
+class RepositorioEstoque(ABC):
+
+    @abstractmethod
+    def criar(
+        self, chefe_id: int, item: ItemEstoque, motivo: str
+    ) -> ItemEstoque:
+        ...
+
+    @abstractmethod
+    def buscar(
+        self, item_id: int, laboratorio_id: int
+    ) -> ItemEstoque | None:
+        ...
+
+    @abstractmethod
+    def listar(
+        self, laboratorio_id: int
+    ) -> list[ItemEstoque]:
+        ...
+
+    @abstractmethod
+    def movimentar(
+        self, chefe_id: int, item_id: int,
+        variacao: Decimal, motivo: str
+    ) -> Decimal:
+        ...
+
+    @abstractmethod
+    def listar_movimentacoes(
+        self, laboratorio_id: int, item_id: int | None = None
+    ) -> list[MovimentacaoEstoque]:
+        ...
+
+
+    
+    @abstractmethod
+    def avaliar_alertas(
+        self,
+        laboratorio_id: int | None = None
+    ) -> int:
+        """Avalia estoque baixo e validade próxima."""
+        ...
+
+    @abstractmethod
+    def listar_alertas(
+        self,
+        laboratorio_id: int,
+        destinatario_id: int
+    ) -> list[dict]:
+        """Lista alertas ativos destinados ao Chefe."""
+        ...
+
+
+
+
+
+
+
+
 class RepositorioSessoes(ABC):
     @abstractmethod
     def criar(self, usuario_id: int, token_hash: bytes, expira_em: datetime) -> None: ...
@@ -267,6 +330,7 @@ class UnidadeTrabalho(ABC):
     sessoes: RepositorioSessoes
     historico: RepositorioHistoricoUso
     chaves: RepositorioChaves
+    estoque: RepositorioEstoque
 
     @abstractmethod
     def contexto(self, ator_id: int | None, motivo: str) -> None: ...

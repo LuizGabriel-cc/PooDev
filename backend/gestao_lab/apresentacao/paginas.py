@@ -29,6 +29,7 @@ def layout(titulo, conteudo, usuario=None, csrf=""):
                 '<a href="/cadastros/aluno">Cadastrar aluno</a>'
                 '<a href="/cadastros/professor">Cadastrar professor</a>'
                 '<a href="/limites-reserva">Limites</a>'
+                '<a href="/estoque">Estoque</a>'
             )
 
         nav = f'<nav>{links}<form method="post" action="/sair">{oculto(csrf)}<button class="secundario">Sair</button></form></nav>'
