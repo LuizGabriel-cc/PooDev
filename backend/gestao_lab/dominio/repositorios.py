@@ -271,7 +271,7 @@ class RepositorioEstoque(ABC):
     @abstractmethod
     def movimentar(
         self, chefe_id: int, item_id: int,
-        variacao: Decimal, motivo: str
+        variacao: Decimal, motivo: str, finalidade: str = "USO"
     ) -> Decimal:
         ...
 
@@ -292,12 +292,22 @@ class RepositorioEstoque(ABC):
         ...
 
     @abstractmethod
+    def avaliar_alertas_item(self, item_id: int) -> int:
+        """Reavalia os avisos de um item após cadastro ou movimentação."""
+        ...
+
+    @abstractmethod
     def listar_alertas(
         self,
         laboratorio_id: int,
         destinatario_id: int
     ) -> list[dict]:
         """Lista alertas ativos destinados ao Chefe."""
+        ...
+
+    @abstractmethod
+    def listar_pendencias(self, laboratorio_id: int) -> list[dict]:
+        """Lista os itens do laboratório que precisam de providências."""
         ...
 
 
@@ -322,6 +332,11 @@ class RepositorioProtocolos(ABC):
 
     @abstractmethod
     def assinar(self, autor_id: int, protocolo_id: int) -> None: ...
+
+    @abstractmethod
+    def registrar_assinatura_pdf_verificada(
+        self, autor_id: int, protocolo_id: int, politica: str
+    ) -> None: ...
 
     @abstractmethod
     def validar(self, chefe_id: int, protocolo_id: int) -> None: ...

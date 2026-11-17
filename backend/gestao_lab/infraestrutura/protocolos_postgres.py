@@ -8,7 +8,7 @@ class ProtocolosPostgres(RepositorioProtocolos):
     _BASE = """
         SELECT p.id, p.laboratorio_id, p.titulo, p.nome_arquivo,
                p.autor_id, u.nome AS autor_nome, p.estado::text AS estado,
-               p.criado_em, p.assinado_em, p.validado_em
+               p.criado_em, p.assinado_em, p.validado_em, p.pdf_politica_verificacao
         FROM gestao_lab.protocolo p
         JOIN gestao_lab.usuario u ON u.id = p.autor_id
     """
@@ -59,6 +59,12 @@ class ProtocolosPostgres(RepositorioProtocolos):
         self._conexao.execute(
             "SELECT gestao_lab.assinar_protocolo(%s, %s)",
             (autor_id, protocolo_id)
+        )
+
+    def registrar_assinatura_pdf_verificada(self, autor_id, protocolo_id, politica):
+        self._conexao.execute(
+            "SELECT gestao_lab.registrar_assinatura_pdf_verificada(%s, %s, %s)",
+            (autor_id, protocolo_id, politica)
         )
 
     def validar(self, chefe_id, protocolo_id):

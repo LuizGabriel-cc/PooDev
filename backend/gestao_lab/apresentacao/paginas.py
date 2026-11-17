@@ -23,6 +23,9 @@ def layout(titulo, conteudo, usuario=None, csrf=""):
         links += '<a href="/historico">Histórico</a>'
         links += '<a href="/protocolos">Protocolos</a>'
         links += '<a href="/chaves">Chaves</a><a href="/recursos">Recursos</a>'
+        links += '<a href="/ocorrencias">Ocorrências</a><a href="/notificacoes">Notificações</a>'
+        if isinstance(usuario, (Aluno, ChefeLaboratorio)):
+            links += '<a href="/restricoes">Restrições</a>'
 
         if isinstance(usuario, ChefeLaboratorio):
             links += (
@@ -31,6 +34,7 @@ def layout(titulo, conteudo, usuario=None, csrf=""):
                 '<a href="/cadastros/professor">Cadastrar professor</a>'
                 '<a href="/limites-reserva">Limites</a>'
                 '<a href="/estoque">Estoque</a>'
+                '<a href="/manutencao">Manutenção</a>'
             )
 
         nav = f'<nav>{links}<form method="post" action="/sair">{oculto(csrf)}<button class="secundario">Sair</button></form></nav>'

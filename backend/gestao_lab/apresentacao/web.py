@@ -10,6 +10,7 @@ import time
 
 from . import paginas
 from . import paginas_chaves
+from . import paginas_operacoes
 from . import paginas_protocolos
 from .csrf import ProtecaoCSRF
 from ..aplicacao.servicos import DadosCadastro
@@ -18,6 +19,8 @@ from ..dominio.usuarios import Perfil, Professor, ChefeLaboratorio
 from datetime import date, datetime, timedelta, timezone
 from . import paginas_estoque
 from ..dominio.protocolos import LIMITE_PDF_BYTES
+
+ROTAS_OPERACOES = frozenset({"/restricoes", "/manutencao", "/ocorrencias", "/notificacoes"})
 
 @dataclass
 class Resposta:
@@ -44,7 +47,7 @@ class LimiteLogin:
 
 
 class AplicacaoWeb:
-    def __init__(self, autenticacao, cadastro, configuracao, recursos=None, reservas=None, historico=None, limites=None, chaves=None, estoque=None, protocolos=None):
+    def __init__(self, autenticacao, cadastro, configuracao, recursos=None, reservas=None, historico=None, limites=None, chaves=None, estoque=None, protocolos=None, operacoes=None):
         self._autenticacao = autenticacao
         self._cadastro = cadastro
         self._recursos = recursos
@@ -58,6 +61,7 @@ class AplicacaoWeb:
         self._limites = limites
         self._estoque = estoque
         self._protocolos = protocolos
+        self._operacoes = operacoes
 
     def __call__(self, environ, start_response):
         try:
@@ -389,7 +393,8 @@ class AplicacaoWeb:
                         token,
                         item_id=item_id,
                         variacao=campos.get("variacao", ""),
-                        motivo=campos.get("motivo", "")
+                        motivo=campos.get("motivo", ""),
+                        finalidade=campos.get("finalidade", "USO")
                     )
 
                     return self._redirecionar(
@@ -422,6 +427,7 @@ class AplicacaoWeb:
         )
 
         alertas = self._estoque.listar_alertas(token)
+        pendencias = self._estoque.listar_pendencias(token)
         
 
         if metodo == "GET":
@@ -441,7 +447,8 @@ class AplicacaoWeb:
                 mensagem=mensagem,
                 erro=erro_formulario,
                 dados=campos if metodo == "POST" else None,
-                alertas=alertas
+                alertas=alertas,
+                pendencias=pendencias
             ),
             400 if erro_formulario else 200
         )
@@ -458,7 +465,7 @@ class AplicacaoWeb:
             if metodo != "GET":
                 return Resposta("Método não permitido.", 405, [("Allow", "GET")])
             avisos = {
-                "novo": "Protocolo cadastrado. O autor já pode assiná-lo.",
+                "novo": "PDF assinado recebido e assinatura verificada.",
                 "assinado": "Assinatura registrada.",
                 "validado": "Protocolo validado.",
                 "vinculado": "Equipamento vinculado ao protocolo.",
@@ -501,15 +508,18 @@ class AplicacaoWeb:
             if metodo != "GET":
                 return Resposta("Método não permitido.", 405, [("Allow", "GET")])
             protocolo, equipamentos = self._protocolos.consultar(token, protocolo_id)
+            verificacao = self._protocolos.verificar_assinatura(token, protocolo_id)
             return Resposta(paginas_protocolos.detalhe(
-                usuario, csrf, protocolo, equipamentos
+                usuario, csrf, protocolo, equipamentos, verificacao=verificacao
             ))
         if metodo != "POST":
             return Resposta("Método não permitido.", 405, [("Allow", "POST")])
         if rota == "/protocolos/assinar":
-            self._protocolos.assinar(token, protocolo_id)
+            raise DadosInvalidos("Assine o PDF no gov.br e envie o arquivo assinado.")
         elif rota == "/protocolos/validar":
-            self._protocolos.validar(token, protocolo_id)
+            self._protocolos.validar(
+                token, protocolo_id, identidade_conferida=campos.get("identidade_conferida") == "sim"
+            )
         elif rota == "/protocolos/vincular":
             equipamento_id = self._identificador(campos.get("equipamento_id"))
             self._protocolos.vincular(token, protocolo_id, equipamento_id)
@@ -519,6 +529,67 @@ class AplicacaoWeb:
 
 
 
+
+    def _acao_operacoes(self, rota, campos, token):
+        servico = self._operacoes
+        acao = campos.get("acao")
+        if rota == "/restricoes":
+            if acao == "proibir":
+                servico.proibir(token, aluno=self._identificador(campos.get("aluno")),
+                                equipamento=self._identificador(campos.get("equipamento")), motivo=campos.get("motivo", ""))
+                return
+            if acao == "solicitar":
+                servico.solicitar(token, proibicao=self._identificador(campos.get("proibicao")),
+                                  justificativa=campos.get("justificativa", ""))
+                return
+            if acao == "responder":
+                decisao = campos.get("decisao")
+                if decisao not in {"aprovar", "negar"}:
+                    raise DadosInvalidos("Selecione uma decisão.")
+                servico.responder(token, pedido=self._identificador(campos.get("pedido")),
+                                  aprovar=decisao == "aprovar", resposta=campos.get("resposta", ""))
+                return
+        if rota == "/manutencao" and acao == "alterar":
+            servico.mudar_estado(token, equipamento=self._identificador(campos.get("equipamento")),
+                                 estado=campos.get("estado", ""), motivo=campos.get("motivo", ""))
+            return
+        if rota == "/ocorrencias":
+            if acao == "registrar":
+                recurso = self._identificador(campos["recurso"]) if campos.get("recurso") else None
+                item = self._identificador(campos["item"]) if campos.get("item") else None
+                servico.registrar_ocorrencia(token, tipo=campos.get("tipo", ""),
+                                             descricao=campos.get("descricao", ""), recurso=recurso, item=item)
+                return
+            if acao == "encerrar":
+                servico.encerrar_ocorrencia(token, self._identificador(campos.get("ocorrencia")))
+                return
+        if rota == "/notificacoes" and acao == "ler":
+            servico.marcar_lida(token, self._identificador(campos.get("notificacao")))
+            return
+        raise DadosInvalidos("Selecione uma ação disponível.")
+
+    def _rotear_operacoes(self, rota, metodo, environ, campos, token, usuario, csrf):
+        if self._operacoes is None:
+            raise FalhaPersistencia("Serviço de operações indisponível.")
+        status = 200
+        mensagem = ""
+        if metodo == "POST":
+            try:
+                self._acao_operacoes(rota, campos, token)
+            except DadosInvalidos as erro:
+                mensagem, status = str(erro), 400
+            else:
+                return self._redirecionar(f"{rota}?registrado=1")
+        elif self._ler_consulta(environ).get("registrado") == "1":
+            mensagem = "Operação registrada."
+
+        renderizar, consultar = {
+            "/restricoes": (paginas_operacoes.restricoes, self._operacoes.listar_restricoes),
+            "/manutencao": (paginas_operacoes.manutencao, self._operacoes.listar_manutencao),
+            "/ocorrencias": (paginas_operacoes.ocorrencias, self._operacoes.listar_ocorrencias),
+            "/notificacoes": (paginas_operacoes.notificacoes, self._operacoes.listar_avisos),
+        }[rota]
+        return Resposta(renderizar(usuario, csrf, consultar(token), mensagem, status == 400, self._fuso), status)
 
     def _rotear(self, environ):
         porta = self._configuracao.porta
@@ -602,7 +673,7 @@ class AplicacaoWeb:
             "/protocolos/vincular",
             "/protocolos/download",
             "/sair",
-        }:
+        } and rota not in ROTAS_OPERACOES:
             return Resposta(
                 paginas.layout(
                     "Página não encontrada",
@@ -623,6 +694,8 @@ class AplicacaoWeb:
             )
             if not self._csrf.validar_sessao(token, campos.get("csrf", "")):
                 raise AcessoNegado("O formulário expirou. Abra a página novamente.")
+        if rota in ROTAS_OPERACOES:
+            return self._rotear_operacoes(rota, metodo, environ, campos if metodo == "POST" else {}, token, usuario, csrf)
         if rota.startswith("/protocolos"):
             return self._rotear_protocolos(
                 rota, metodo, environ, campos if metodo == "POST" else {},

@@ -1,8 +1,7 @@
-"""Testes com duas conexões reais a PostgreSQL; usar somente a massa demonstrativa.
+"""Testes com duas conexões reais ao PostgreSQL em um banco descartável.
 
-pip install 'psycopg[binary]>=3.2,<4'
-Definir DATABASE_URL com a conexão local e executar este arquivo.
-Os testes criam histórico; ao final cancelam reservas e devolvem chaves utilizadas.
+Instale o schema e 03_dados_exemplo.sql no banco indicado em TEST_DATABASE_URL.
+Ao final, o script cancela reservas e devolve chaves, preservando seu histórico.
 """
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -11,18 +10,19 @@ import os
 from threading import Barrier
 
 import psycopg
+from psycopg.conninfo import conninfo_to_dict
 
 
-def conectar():
-    return psycopg.connect(os.environ["DATABASE_URL"], autocommit=True,
+def conectar(url):
+    return psycopg.connect(url, autocommit=True, connect_timeout=5,
                           options="-c search_path=gestao_lab,public -c lock_timeout=10000 -c statement_timeout=20000")
 
 
-def competir(sql, parametros, codigo_esperado, nome, confirmados):
+def competir(url, sql, parametros, codigo_esperado, nome, confirmados):
     barreira = Barrier(2)
 
     def executar(args):
-        with conectar() as conn:
+        with conectar(url) as conn:
             with conn.transaction():
                 barreira.wait(timeout=15)
                 try:
@@ -49,12 +49,21 @@ def competir(sql, parametros, codigo_esperado, nome, confirmados):
 
 
 def main():
-    if not os.environ.get("DATABASE_URL"):
-        raise SystemExit("Defina DATABASE_URL para o banco de testes PostgreSQL.")
+    url = os.environ.get("TEST_DATABASE_URL", "").strip()
+    if not url:
+        raise SystemExit("Defina TEST_DATABASE_URL para o banco descartável de testes.")
+    try:
+        banco = conninfo_to_dict(url).get("dbname", "")
+    except psycopg.ProgrammingError:
+        raise SystemExit("TEST_DATABASE_URL contém uma configuração de conexão inválida.") from None
+    if not banco.startswith(("gestao_laboratorio_teste", "poodev_teste_")):
+        raise SystemExit("TEST_DATABASE_URL deve indicar um banco cujo nome comece por gestao_laboratorio_teste ou poodev_teste_.")
     resultados = []
     reservas = set()
     emprestimos = set()
-    with conectar() as admin:
+    with conectar(url) as admin:
+        if admin.execute("SELECT current_database()").fetchone()[0] != banco:
+            raise SystemExit("O banco conectado não corresponde ao nome em TEST_DATABASE_URL.")
         demo = admin.execute("SELECT email FROM usuario WHERE id=1").fetchone()
         if demo != ("chefe.a@example.org",):
             raise SystemExit("Execute somente no banco carregado com 03_dados_exemplo.sql.")
@@ -67,7 +76,7 @@ def main():
                 admin.execute("SELECT contexto_operacao(1,'Configuração de teste de concorrência')")
                 admin.execute("UPDATE laboratorio SET duracao_maxima_reserva=NULL,max_reservas_simultaneas=NULL WHERE id=1")
             resultado, rid = competir(
-                "SELECT criar_reserva(%s,%s,%s,%s)",
+                url, "SELECT criar_reserva(%s,%s,%s,%s)",
                 [(3, 304, inicio, fim), (4, 304, inicio, fim)], "23P01", "Mesmo equipamento: uma confirmação", reservas)
             resultados.append(resultado)
             reservas.add(rid)
@@ -80,7 +89,7 @@ def main():
             rid_b = admin.execute("SELECT criar_reserva(4,302,%s,%s)", (inicio, fim)).fetchone()[0]
             reservas.add(rid_b)
             resultado, eid = competir(
-                "SELECT retirar_chave(%s,%s,6,2)", [(3, rid_a), (4, rid_b)], "23505", "Mesma cópia: um empréstimo aberto", emprestimos)
+                url, "SELECT retirar_chave(%s,%s,6,2)", [(3, rid_a), (4, rid_b)], "23505", "Mesma cópia: um empréstimo aberto", emprestimos)
             resultados.append(resultado)
             emprestimos.add(eid)
             admin.execute("SELECT devolver_chave(%s,2)", (eid,))
@@ -93,7 +102,7 @@ def main():
                 admin.execute("SELECT contexto_operacao(1,'Limite de teste de concorrência')")
                 admin.execute("UPDATE laboratorio SET max_reservas_simultaneas=1 WHERE id=1")
             resultado, rid = competir(
-                "SELECT criar_reserva(3,%s,%s,%s)", [(301, inicio, fim), (302, inicio, fim)], "23514",
+                url, "SELECT criar_reserva(3,%s,%s,%s)", [(301, inicio, fim), (302, inicio, fim)], "23514",
                 "Recursos distintos: limite simultâneo do usuário respeitado", reservas)
             resultados.append(resultado)
             reservas.add(rid)

@@ -68,15 +68,13 @@ A checagem `%PDF-` é uma validação inicial do tipo de arquivo, não uma anál
 | Método | Responsabilidade |
 | --- | --- |
 | `listar()` e `consultar()` | Mostram protocolos do laboratório do usuário autenticado. |
-| `cadastrar()` | Valida o PDF, identifica o autor pela sessão e grava o arquivo. |
-| `assinar()` | Permite a assinatura somente pelo autor identificado na sessão. |
-| `validar()` | Permite a validação somente pelo Chefe, após a assinatura. |
-| `vincular()` | Associa um protocolo validado a equipamento do mesmo laboratório, mediante autorização do Chefe. |
+| `cadastrar()` | Confere a assinatura do PDF e a correspondência nominal com o autor da sessão antes de gravar o arquivo. |
+| `verificar_assinatura()` | Consulta o resultado técnico da verificação do PDF. |
+| `validar()` | Permite ao Chefe aprovar após reconferir a assinatura e confirmar a identidade do signatário. |
+| `vincular()` | Associa um protocolo com evidência digital e aprovação do Chefe a equipamento do mesmo laboratório. |
 | `baixar()` | Recupera o nome e os bytes originais do PDF para usuário do laboratório. |
 
-O fluxo de estados é: **cadastrado e não assinado → assinado → validado → vinculado a equipamento**. Um protocolo validado pode ter vários equipamentos associados.
-
-A assinatura identifica o usuário autenticado e registra o horário no sistema. **Não é assinatura digital com certificado criptográfico.** Um protocolo assinado não pode ter seu conteúdo substituído, conforme as regras do PostgreSQL.
+O autor assina no gov.br, envia o PDF e aguarda a validação do Chefe. Um protocolo aprovado pode ser vinculado a vários equipamentos. A configuração da cadeia, a verificação offline e o tratamento dos registros anteriores estão no [guia de assinaturas gov.br](README_Etapa6_Validacao_Assinaturas.md).
 
 ### Banco e interface
 
@@ -84,9 +82,9 @@ A assinatura identifica o usuário autenticado e registra o horário no sistema.
 
 O PDF original fica na coluna `pdf_original` (`bytea`) da tabela `protocolo`. Essa decisão mantém arquivo e metadados sob a mesma transação e evita depender de caminhos locais para baixar documentos. O método `arquivo()` devolve os bytes sem conversão.
 
-As funções SQL `gestao_lab.assinar_protocolo` e `gestao_lab.validar_protocolo` aplicam as mudanças de estado. Restrições e gatilhos impedem edição indevida após assinatura ou validação. A tabela `protocolo_equipamento` mantém as associações.
+As funções SQL `gestao_lab.registrar_assinatura_pdf_verificada` e `gestao_lab.validar_protocolo` aplicam as mudanças de estado. Restrições e gatilhos preservam o PDF e a evidência após a conferência. A tabela `protocolo_equipamento` mantém as associações.
 
-**Interface:** `apresentacao/paginas_protocolos.py` monta as páginas, e `apresentacao/web.py` atende `/protocolos`, `/protocolos/novo`, `/protocolos/detalhe`, `/protocolos/assinar`, `/protocolos/validar`, `/protocolos/vincular` e `/protocolos/download`. O upload usa `multipart/form-data`, com controle de tamanho, sessão e CSRF. O download utiliza `Content-Type: application/pdf`.
+`apresentacao/paginas_protocolos.py` monta as páginas, e `apresentacao/web.py` atende `/protocolos`, `/protocolos/novo`, `/protocolos/detalhe`, `/protocolos/validar`, `/protocolos/vincular` e `/protocolos/download`. O upload usa `multipart/form-data`, com controle de tamanho, sessão e CSRF. O download utiliza `Content-Type: application/pdf`.
 
 ## Por que essas escolhas técnicas?
 

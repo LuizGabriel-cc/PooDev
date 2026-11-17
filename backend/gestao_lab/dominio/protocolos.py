@@ -47,10 +47,15 @@ class Protocolo:
     assinado_em: datetime | None
     validado_em: datetime | None
     vinculos: tuple[VinculoEquipamento, ...] = ()
+    pdf_politica_verificacao: str | None = None
 
     @property
     def assinado(self) -> bool:
         return self.assinado_em is not None
+
+    @property
+    def pdf_verificado(self) -> bool:
+        return self.assinado and self.pdf_politica_verificacao is not None
 
     @property
     def validado(self) -> bool:

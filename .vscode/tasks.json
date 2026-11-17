@@ -10,7 +10,9 @@
         "pip",
         "install",
         "-r",
-        "backend/requirements-dev.txt"
+        "backend/requirements-dev.txt",
+        "-r",
+        "backend/requirements-assinatura.txt"
       ],
       "options": {
         "cwd": "${workspaceFolder}"

@@ -1280,7 +1280,7 @@ class ServicoEstoque:
             )
 
             # Verifica automaticamente estoque e validade.
-            tx.estoque.avaliar_alertas(laboratorio.id)
+            tx.estoque.avaliar_alertas_item(salvo.id)
 
             return salvo
 
@@ -1291,7 +1291,8 @@ class ServicoEstoque:
         *,
         item_id: int,
         variacao: Decimal | int | str,
-        motivo: str
+        motivo: str,
+        finalidade: str = "USO"
     ) -> Decimal:
 
         if type(item_id) is not int or item_id <= 0:
@@ -1317,6 +1318,11 @@ class ServicoEstoque:
             motivo, "Motivo", 500
         )
 
+        if finalidade not in ("USO", "DESCARTE"):
+            raise DadosInvalidos("Finalidade da movimentação inválida.")
+        if variacao > 0 and finalidade == "DESCARTE":
+            raise DadosInvalidos("Descarte exige uma saída do estoque.")
+
         with self._transacao() as tx:
             chefe, laboratorio = self._exigir_chefe(
                 tx, token
@@ -1326,31 +1332,21 @@ class ServicoEstoque:
                 item_id, laboratorio.id
             )
 
-            if item is None or not item.ativo:
+            if item is None:
                 raise DadosInvalidos(
                     "Item inexistente ou inativo."
                 )
 
-            if item.quantidade + variacao < 0:
-                raise DadosInvalidos(
-                    "Estoque insuficiente para esta saída."
-                )
-
-            tx.contexto(
-                chefe.id,
-                motivo
-            )
-
-            
             saldo = tx.estoque.movimentar(
                 chefe.id,
                 item.id,
                 variacao,
-                motivo
+                motivo,
+                finalidade
             )
 
             # Reavalia os alertas após a movimentação.
-            tx.estoque.avaliar_alertas(laboratorio.id)
+            tx.estoque.avaliar_alertas_item(item.id)
 
             return saldo
 
@@ -1390,6 +1386,11 @@ class ServicoEstoque:
 
 
     
+    def listar_pendencias(self, token: str) -> list[dict]:
+        with self._transacao() as tx:
+            _, laboratorio = self._exigir_chefe(tx, token)
+            return tx.estoque.listar_pendencias(laboratorio.id)
+
     def listar_alertas(self, token: str) -> list[dict]:
 
         with self._transacao() as tx:

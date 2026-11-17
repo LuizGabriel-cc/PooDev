@@ -1,12 +1,15 @@
 import argparse
+import os
 from getpass import getpass
 from wsgiref.simple_server import make_server, WSGIRequestHandler
+
+import psycopg
 
 from .aplicacao.seguranca import ProtecaoSenha
 from .aplicacao.servicos import DadosCadastro, ServicoAutenticacao, ServicoCadastro, ServicoConfiguracaoInicial, ServicoRecursos
 from .apresentacao.web import AplicacaoWeb
-from .dominio.erros import DadosInvalidos, ErroAplicacao
-from .infraestrutura.configuracao import Configuracao
+from .dominio.erros import DadosInvalidos, ErroAplicacao, FalhaPersistencia
+from .infraestrutura.configuracao import Configuracao, validar_versao_schema
 from .infraestrutura.postgres import UnidadeTrabalhoPostgres
 from .aplicacao.servicos import ServicoReservas
 from .aplicacao.servicos import ServicoHistoricoUso
@@ -14,6 +17,10 @@ from .aplicacao.servicos import ServicoLimitesReserva
 from .aplicacao.chaves import ServicoChaves
 from .aplicacao.servicos import ServicoEstoque
 from .aplicacao.protocolos import ServicoProtocolos
+from .aplicacao.operacoes import ServicoOperacoes
+from .aplicacao.notificacoes import ServicoEnvioEmail, iniciar_envio_email
+from .infraestrutura.smtp import ConfiguracaoSMTP, TransportadorSMTP
+from .infraestrutura.verificador_assinatura_pdf import VerificadorAssinaturaPDF
 import logging
 from threading import Event, Thread
 
@@ -90,6 +97,13 @@ def main():
             configuracao.definir_senha(email, pedir_senha())
             print("Senha redefinida e sessões anteriores revogadas.")
         else:
+            try:
+                with psycopg.connect(config.database_url, connect_timeout=5) as conexao:
+                    conexao.read_only = True
+                    validar_versao_schema(conexao)
+            except psycopg.Error as erro:
+                raise FalhaPersistencia("Não foi possível conferir o schema do PostgreSQL.") from erro
+
             autenticacao = ServicoAutenticacao(transacao, senhas, config.horas_sessao)
             cadastro = ServicoCadastro(transacao, senhas, autenticacao)
             recursos = ServicoRecursos(transacao, autenticacao)
@@ -98,27 +112,45 @@ def main():
             limites = ServicoLimitesReserva(transacao, autenticacao)
             chaves = ServicoChaves(transacao, autenticacao)
             estoque = ServicoEstoque(transacao, autenticacao)
-            protocolos = ServicoProtocolos(transacao, autenticacao)
-            app = AplicacaoWeb(autenticacao, cadastro, config, recursos=recursos, reservas=reservas, historico=historico, limites=limites, chaves=chaves, estoque=estoque, protocolos=protocolos)
+            caminhos = [p.strip() for p in os.getenv("PDF_RAIZES_CONFIAVEIS", "").split(os.pathsep) if p.strip()]
+            intermediarias = [p.strip() for p in os.getenv("PDF_CERTIFICADOS_INTERMEDIARIOS", "").split(os.pathsep) if p.strip()]
+            listas_revogacao = [p.strip() for p in os.getenv("PDF_LISTAS_REVOGACAO", "").split(os.pathsep) if p.strip()]
+            verificador_pdf = VerificadorAssinaturaPDF(caminhos, intermediarias, caminhos_crls=listas_revogacao)
+            protocolos = ServicoProtocolos(transacao, autenticacao, verificador_pdf)
+            operacoes = ServicoOperacoes(transacao, autenticacao)
+            app = AplicacaoWeb(
+                autenticacao, cadastro, config, recursos=recursos, reservas=reservas,
+                historico=historico, limites=limites, chaves=chaves, estoque=estoque,
+                protocolos=protocolos, operacoes=operacoes,
+            )
+            try:
+                smtp = ConfiguracaoSMTP.do_ambiente()
+            except DadosInvalidos as erro:
+                logging.getLogger(__name__).warning("Envio SMTP desativado: %s", erro)
+                smtp = None
 
             # O servidor de referência atende a demonstração local; a interface é WSGI.
-            parada_alertas = iniciar_monitoramento_estoque(transacao)
-
-            try:
-                with make_server(
-                    "127.0.0.1",
-                    config.porta,
-                    app,
-                    handler_class=AtendimentoLocal
-                ) as servidor:
+            with make_server(
+                "127.0.0.1",
+                config.porta,
+                app,
+                handler_class=AtendimentoLocal
+            ) as servidor:
+                parada_alertas = iniciar_monitoramento_estoque(transacao)
+                parada_email = None
+                try:
+                    if smtp is not None:
+                        parada_email = iniciar_envio_email(ServicoEnvioEmail(transacao, TransportadorSMTP(smtp)))
                     print(
                         f"Abra http://127.0.0.1:{config.porta}"
                         " — Ctrl+C para encerrar."
                     )
                     servidor.serve_forever()
 
-            finally:
-                parada_alertas.set()
+                finally:
+                    parada_alertas.set()
+                    if parada_email is not None:
+                        parada_email.set()
 
     except (ErroAplicacao, OSError) as erro:
         if isinstance(erro, ErroAplicacao):

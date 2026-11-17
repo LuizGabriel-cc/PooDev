@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from urllib.parse import urlencode
 
 from gestao_lab.aplicacao.protocolos import ServicoProtocolos
+from gestao_lab.dominio.assinaturas_pdf import ResultadoAssinatura, EstadoAssinatura
 from gestao_lab.apresentacao.web import AplicacaoWeb
 from gestao_lab.dominio.erros import AcessoNegado, DadosInvalidos
 from gestao_lab.dominio.protocolos import (
@@ -47,6 +48,12 @@ class ProtocolosEmMemoria:
     def assinar(self, autor, protocolo_id):
         p = self.registros[protocolo_id]
         self.registros[protocolo_id] = replace(p, assinado_em=datetime.now(timezone.utc))
+
+    def registrar_assinatura_pdf_verificada(self, autor, protocolo_id, politica):
+        self.assinar(autor, protocolo_id)
+        self.registros[protocolo_id] = replace(
+            self.registros[protocolo_id], pdf_politica_verificacao=politica
+        )
 
     def validar(self, chefe, protocolo_id):
         p = self.registros[protocolo_id]
@@ -95,7 +102,19 @@ class AutenticacaoFalsa:
         return self.usuarios.get(token)
 
 
-def sistema_falso():
+class VerificadorFalso:
+    def __init__(self, estado=EstadoAssinatura.VALIDA, signatario="Autor de teste"):
+        self.estado = estado
+        self.signatario = signatario
+
+    def verificar(self, arquivo):
+        return ResultadoAssinatura(
+            self.estado, (self.signatario,), "Resultado simulado para teste da aplicação",
+            politica="politica-de-teste"
+        )
+
+
+def sistema_falso(verificador=None):
     chefe = ChefeLaboratorio(
         id=1, nome="Chefe de teste", email="chefe@example.org",
         laboratorio_id=1, senha_hash="hash", programa_pos="Biociências"
@@ -112,7 +131,7 @@ def sistema_falso():
     repositorio = ProtocolosEmMemoria()
     tx = TransacaoFalsa(repositorio)
     auth = AutenticacaoFalsa({"chefe": chefe, "autor": aluno, "outro": outro})
-    servico = ServicoProtocolos(lambda: tx, auth)
+    servico = ServicoProtocolos(lambda: tx, auth, verificador or VerificadorFalso())
     return servico, repositorio, auth
 
 
@@ -136,18 +155,20 @@ class TesteProtocolos(unittest.TestCase):
         pid = servico.cadastrar(
             "autor", titulo="Reagentes", nome_arquivo="ensaio.pdf", pdf_original=PDF
         )
-        with self.assertRaises(DadosInvalidos):
-            servico.validar("chefe", pid)
-        with self.assertRaises(AcessoNegado):
-            servico.assinar("chefe", pid)
-        servico.assinar("autor", pid)
+        protocolo, _ = servico.consultar("autor", pid)
+        self.assertTrue(protocolo.assinado)
+        self.assertTrue(protocolo.pdf_verificado)
+        self.assertEqual(servico.verificar_assinatura("autor", pid).estado, EstadoAssinatura.VALIDA)
         with self.assertRaises(DadosInvalidos):
             servico.assinar("autor", pid)
         with self.assertRaises(AcessoNegado):
             servico.validar("autor", pid)
         with self.assertRaises(DadosInvalidos):
             servico.vincular("chefe", pid, 10)
-        servico.validar("chefe", pid)
+        with self.assertRaisesRegex(DadosInvalidos, "Confirme a identidade"):
+            servico.validar("chefe", pid)
+        self.assertFalse(repositorio.registros[pid].validado)
+        servico.validar("chefe", pid, identidade_conferida=True)
         servico.vincular("chefe", pid, 10)
         servico.vincular("chefe", pid, 10)
         protocolo, _ = servico.consultar("chefe", pid)
@@ -155,6 +176,73 @@ class TesteProtocolos(unittest.TestCase):
         self.assertTrue(protocolo.assinado and protocolo.validado)
         self.assertEqual(servico.baixar("autor", pid), ("ensaio.pdf", PDF))
         self.assertEqual(repositorio.arquivos[pid], PDF)
+
+    def test_recusa_pdf_nao_assinado_ou_sem_confianca(self):
+        servico, repositorio, _ = sistema_falso(VerificadorFalso(EstadoAssinatura.SEM_ASSINATURA))
+        with self.assertRaises(DadosInvalidos):
+            servico.cadastrar("autor", titulo="Manual", nome_arquivo="x.pdf", pdf_original=PDF)
+        self.assertFalse(repositorio.registros)
+
+        servico, repositorio, _ = sistema_falso(VerificadorFalso(EstadoAssinatura.INDETERMINADA))
+        with self.assertRaises(DadosInvalidos):
+            servico.cadastrar("autor", titulo="Manual", nome_arquivo="x.pdf", pdf_original=PDF)
+        self.assertFalse(repositorio.registros)
+
+    def test_recusa_certificado_de_outro_autor(self):
+        servico, repositorio, _ = sistema_falso(VerificadorFalso(signatario="Outra Pessoa"))
+        with self.assertRaises(DadosInvalidos):
+            servico.cadastrar("autor", titulo="Manual", nome_arquivo="x.pdf", pdf_original=PDF)
+        self.assertFalse(repositorio.registros)
+
+    def test_preserva_protocolo_legado_e_bloqueia_novas_acoes(self):
+        servico, repositorio, _ = sistema_falso()
+        pid = repositorio.criar(1, 2, "Legado", "legado.pdf", PDF)
+        repositorio.assinar(2, pid)
+        self.assertEqual(
+            servico.verificar_assinatura("chefe", pid).estado, EstadoAssinatura.INDETERMINADA
+        )
+        with self.assertRaisesRegex(DadosInvalidos, "novo protocolo"):
+            servico.validar("chefe", pid, identidade_conferida=True)
+        repositorio.validar(1, pid)  # registro validado na versão anterior
+        with self.assertRaises(DadosInvalidos):
+            servico.vincular("chefe", pid, 10)
+        protocolo, opcoes_vinculo = servico.consultar("chefe", pid)
+        self.assertTrue(protocolo.validado)
+        self.assertFalse(protocolo.pdf_verificado)
+        self.assertFalse(opcoes_vinculo)
+        self.assertEqual(servico.baixar("chefe", pid), ("legado.pdf", PDF))
+
+
+    def test_sessao_invalida_nao_inicia_verificacao_pdf(self):
+        class VerificadorContador(VerificadorFalso):
+            chamadas = 0
+
+            def verificar(self, arquivo):
+                self.chamadas += 1
+                return super().verificar(arquivo)
+
+        verificador = VerificadorContador()
+        servico, repositorio, _ = sistema_falso(verificador)
+        with self.assertRaises(AcessoNegado):
+            servico.cadastrar(
+                "sessao-inexistente", titulo="Sem acesso",
+                nome_arquivo="documento.pdf", pdf_original=PDF
+            )
+        self.assertEqual(verificador.chamadas, 0)
+        self.assertFalse(repositorio.registros)
+
+    def test_conferencia_indica_autoria_divergente(self):
+        verificador = VerificadorFalso()
+        servico, _, _ = sistema_falso(verificador)
+        protocolo_id = servico.cadastrar(
+            "autor", titulo="Teste", nome_arquivo="teste.pdf", pdf_original=PDF
+        )
+        verificador.signatario = "Outra Pessoa"
+        situacao = servico.verificar_assinatura("chefe", protocolo_id)
+        self.assertEqual(situacao.estado, EstadoAssinatura.AUTORIA_DIVERGENTE)
+        self.assertFalse(situacao.valida)
+        with self.assertRaises(DadosInvalidos):
+            servico.validar("chefe", protocolo_id, identidade_conferida=True)
 
     def test_isolamento_de_laboratorios(self):
         servico, _, _ = sistema_falso()
@@ -226,6 +314,20 @@ class TesteProtocolos(unittest.TestCase):
             requisitar("/protocolos/download?id=1", campos_post,
                        "application/x-www-form-urlencoded", "POST")["status"], 405
         )
+        token = "chefe"
+        csrf = app._csrf.para_sessao(token)
+        campos_validacao = {"csrf": csrf, "protocolo_id": "1"}
+        detalhe_chefe = requisitar("/protocolos/detalhe?id=1")
+        self.assertIn(b'name="identidade_conferida"', detalhe_chefe["body"])
+        self.assertEqual(requisitar(
+            "/protocolos/validar", urlencode(campos_validacao).encode(), metodo="POST"
+        )["status"], 400)
+        self.assertFalse(servico.consultar("chefe", 1)[0].validado)
+        campos_validacao["identidade_conferida"] = "sim"
+        self.assertEqual(requisitar(
+            "/protocolos/validar", urlencode(campos_validacao).encode(), metodo="POST"
+        )["status"], 303)
+        self.assertTrue(servico.consultar("chefe", 1)[0].validado)
 
 
 if __name__ == "__main__":

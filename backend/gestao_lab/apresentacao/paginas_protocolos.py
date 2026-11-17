@@ -8,12 +8,16 @@ def _data(instante):
     return instante.strftime("%d/%m/%Y %H:%M") if instante else "—"
 
 
+def _situacao(protocolo):
+    if not protocolo.pdf_verificado:
+        return "Validado no fluxo anterior" if protocolo.validado else "Sem verificação digital registrada"
+    return "Validado pelo Chefe" if protocolo.validado else "Aguardando conferência do Chefe"
+
+
 def lista(usuario, csrf, protocolos, mensagem=""):
     linhas = []
     for protocolo in protocolos:
-        estado = "Validado" if protocolo.validado else (
-            "Aguardando validação" if protocolo.assinado else "Aguardando assinatura"
-        )
+        estado = _situacao(protocolo)
         linhas.append(
             f'<tr><td><a href="/protocolos/detalhe?id={protocolo.id}">'
             f'{escape(protocolo.titulo)}</a></td>'
@@ -23,7 +27,7 @@ def lista(usuario, csrf, protocolos, mensagem=""):
         )
     corpo = paginas.aviso(mensagem) + '''
         <p>Os protocolos são compartilhados entre os usuários do mesmo laboratório.
-        O autor assina o documento e o Chefe confirma sua validação.</p>
+        O autor assina o PDF no gov.br antes do envio; o PooDev verifica a assinatura. O Chefe realiza a validação administrativa.</p>
         <div class="acoes"><a class="botao" href="/protocolos/novo">Adicionar protocolo</a></div>
         <div class="tabela"><table><thead><tr>
             <th>Título</th><th>Autor</th><th>Situação</th><th>Cadastro</th><th>Arquivo</th>
@@ -36,33 +40,37 @@ def lista(usuario, csrf, protocolos, mensagem=""):
 def novo(usuario, csrf, mensagem="", titulo=""):
     corpo = paginas.aviso(mensagem, True) + f'''
         <section class="cartao">
-            <p>O arquivo original será mantido. Tamanho máximo: 5 MB.
-            A assinatura do autor será registrada após o cadastro.</p>
+            <p>Assine primeiro o PDF no gov.br e envie o arquivo assinado (até 5 MB). O PooDev verificará sua assinatura, sem modificar o arquivo. A assinatura só será aceita com uma autoridade confiável configurada.</p>
             <form method="post" action="/protocolos/novo" enctype="multipart/form-data">
                 {paginas.oculto(csrf)}
                 {paginas.campo("titulo", "Título", titulo, limite=180)}
                 <label>Arquivo PDF
                     <input type="file" name="arquivo" accept=".pdf,application/pdf" required>
                 </label>
-                <div class="acoes"><button>Adicionar protocolo</button>
+                <div class="acoes"><button>Enviar PDF assinado</button>
                 <a href="/protocolos">Cancelar</a></div>
             </form>
         </section>'''
     return paginas.layout("Adicionar protocolo", corpo, usuario, csrf)
 
 
-def detalhe(usuario, csrf, protocolo, equipamentos, mensagem=""):
-    status = "Validado" if protocolo.validado else (
-        "Assinado; aguardando validação" if protocolo.assinado else "Não assinado"
-    )
+def detalhe(usuario, csrf, protocolo, equipamentos, mensagem="", verificacao=None):
     linhas = [
         ("Autor", protocolo.autor_nome),
         ("Arquivo", protocolo.nome_arquivo),
         ("Cadastro", _data(protocolo.criado_em)),
-        ("Assinatura", _data(protocolo.assinado_em)),
-        ("Validação", _data(protocolo.validado_em)),
-        ("Situação", status),
+        ("Validação pelo Chefe", _data(protocolo.validado_em)),
+        ("Situação", _situacao(protocolo)),
     ]
+    if protocolo.pdf_verificado:
+        linhas.append(("Verificação digital registrada em", _data(protocolo.assinado_em)))
+    elif protocolo.assinado:
+        linhas.append(("Assinatura registrada no fluxo anterior", _data(protocolo.assinado_em)))
+    if verificacao is not None:
+        linhas.append(("Verificação técnica atual", verificacao.estado.value))
+        if verificacao.signatarios:
+            linhas.append(("Nomes nos certificados", ", ".join(verificacao.signatarios)))
+        linhas.append(("Resultado técnico", verificacao.detalhe))
     detalhes = "".join(
         f"<dt>{escape(nome)}</dt><dd>{escape(str(valor))}</dd>"
         for nome, valor in linhas
@@ -75,22 +83,21 @@ def detalhe(usuario, csrf, protocolo, equipamentos, mensagem=""):
                 href="/protocolos/download?id={protocolo.id}">Baixar PDF original</a>
                 <a href="/protocolos">Voltar</a></div>
         </section>'''
-    if usuario.id == protocolo.autor_id and not protocolo.assinado:
+    if not protocolo.pdf_verificado:
+        corpo += '''
+        <p>Para seguir pelo fluxo atual, o autor deve baixar este PDF, assiná-lo no gov.br
+        e <a href="/protocolos/novo">enviá-lo como um novo protocolo</a>.</p>'''
+    if (
+        isinstance(usuario, ChefeLaboratorio) and protocolo.pdf_verificado
+        and not protocolo.validado and verificacao is not None and verificacao.valida
+    ):
         corpo += f'''<section class="cartao">
-            <p>Ao confirmar, você registra sua autoria e bloqueia alterações no documento.
-            Esta assinatura é um registro autenticado no sistema, não um certificado digital.</p>
-            <form method="post" action="/protocolos/assinar">
-                {paginas.oculto(csrf)}
-                <input type="hidden" name="protocolo_id" value="{protocolo.id}">
-                <button>Assinar como autor</button>
-            </form>
-        </section>'''
-    if isinstance(usuario, ChefeLaboratorio) and protocolo.assinado and not protocolo.validado:
-        corpo += f'''<section class="cartao">
-            <p>Confirme a validação após revisar o documento assinado.</p>
+            <p>Revise o PDF e confira quem assinou. A comparação de nomes pode coincidir entre homônimos.</p>
             <form method="post" action="/protocolos/validar">
                 {paginas.oculto(csrf)}
                 <input type="hidden" name="protocolo_id" value="{protocolo.id}">
+                <label><input type="checkbox" name="identidade_conferida" value="sim" required>
+                    Conferi que o signatário é o autor deste protocolo.</label>
                 <button>Validar protocolo</button>
             </form>
         </section>'''
@@ -99,7 +106,7 @@ def detalhe(usuario, csrf, protocolo, equipamentos, mensagem=""):
         for v in protocolo.vinculos
     ) or "<li>Nenhum equipamento vinculado.</li>"
     corpo += f'<section class="cartao"><h2>Equipamentos vinculados</h2><ul>{vinculos}</ul>'
-    if isinstance(usuario, ChefeLaboratorio) and protocolo.validado:
+    if isinstance(usuario, ChefeLaboratorio) and protocolo.validado and protocolo.pdf_verificado:
         vinculados = {v.equipamento_id for v in protocolo.vinculos}
         opcoes = "".join(
             f'<option value="{e.id}">{escape(e.nome)}'

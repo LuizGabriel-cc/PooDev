@@ -163,7 +163,7 @@ BEGIN
     PERFORM avaliar_alertas_estoque(1);
     PERFORM movimentar_estoque(1,2,-6,'Nova utilização');
     PERFORM pg_temp.verificar(avaliar_alertas_estoque(1)=1,'Novo episódio de estoque baixo gera novo alerta');
-    UPDATE item_estoque SET validade=current_date+1 WHERE id=1;
+    UPDATE item_estoque SET validade=data_local_estoque()+1 WHERE id=1;
     PERFORM pg_temp.verificar(avaliar_alertas_estoque(1)=1,'Validade próxima gera alerta');
     PERFORM pg_temp.verificar(avaliar_alertas_estoque(1)=0,'Validade próxima não gera alertas duplicados');
     PERFORM pg_temp.verificar((SELECT count(*)>0 FROM envio_email WHERE estado='PENDENTE'),'Alertas entram na fila de e-mail sem envio externo');
@@ -178,6 +178,18 @@ BEGIN
     PERFORM pg_temp.esperar_erro(format('SELECT assinar_protocolo(4,%s)',pid),'42501','Somente autor assina protocolo');
     PERFORM pg_temp.esperar_erro(format('INSERT INTO protocolo_equipamento(protocolo_id,equipamento_id,laboratorio_id,vinculado_por) VALUES(%s,301,1,1)',pid),'23514','Não vincula protocolo não validado');
     PERFORM assinar_protocolo(3,pid);
+    PERFORM pg_temp.esperar_erro(format('SELECT validar_protocolo(1,%s)',pid),'23514','Assinatura legada não comprova verificação digital');
+    PERFORM pg_temp.esperar_erro(format('SELECT registrar_assinatura_pdf_verificada(3,%s,''teste'')',pid),'42501','Não promove assinatura legada para digital');
+    PERFORM pg_temp.esperar_erro(format('UPDATE protocolo SET estado=''VALIDADO'',validado_em=clock_timestamp(),validado_por=1 WHERE id=%s',pid),'23514','Atualização direta também exige verificação digital');
+
+    PERFORM contexto_operacao(3,'Cadastro de protocolo de teste');
+    INSERT INTO protocolo(laboratorio_id,titulo,autor_id,pdf_original,nome_arquivo)
+    VALUES(1,'Protocolo verificado',3,v_bytes,'protocolo.pdf') RETURNING id INTO pid;
+    PERFORM pg_temp.esperar_erro(format('SELECT registrar_assinatura_pdf_verificada(4,%s,''teste'')',pid),'42501','Somente autor registra verificação digital');
+    -- Simula o resultado da verificação criptográfica feita na aplicação.
+    PERFORM registrar_assinatura_pdf_verificada(3,pid,'teste');
+    PERFORM pg_temp.verificar((SELECT pdf_politica_verificacao='teste' AND pdf_sha256=sha256(v_bytes) FROM protocolo WHERE id=pid),'Política da verificação e digest do PDF são preservados');
+    PERFORM pg_temp.esperar_erro(format('UPDATE protocolo SET pdf_politica_verificacao=''outra'' WHERE id=%s',pid),'23514','Evidência de verificação é imutável');
     PERFORM pg_temp.esperar_erro(format('SELECT validar_protocolo(2,%s)',pid),'42501','Somente Chefe valida protocolo');
     PERFORM validar_protocolo(1,pid);
     INSERT INTO protocolo_equipamento(protocolo_id,equipamento_id,laboratorio_id,vinculado_por) VALUES(pid,301,1,1),(pid,302,1,1);

@@ -1,0 +1,3 @@
+# Dependência adicional para análise criptográfica de assinaturas em PDF.
+# Instalar somente no ambiente de execução da aplicação.
+pyHanko>=0.38.1,<0.39
