@@ -45,13 +45,18 @@ class UsuariosPostgres(RepositorioUsuarios):
     def __init__(self, conexao):
         self._conexao = conexao
 
-    def buscar_por_email(self, email):
-        row = self._conexao.execute(CONSULTA_USUARIOS + " WHERE u.email = %s", (email,)).fetchone()
+    def _buscar(self, filtro, valor, *, bloquear):
+        consulta = CONSULTA_USUARIOS + filtro
+        if bloquear:
+            consulta += " FOR NO KEY UPDATE OF u"
+        row = self._conexao.execute(consulta, (valor,)).fetchone()
         return reconstruir_usuario(row) if row else None
 
-    def buscar_por_id(self, usuario_id):
-        row = self._conexao.execute(CONSULTA_USUARIOS + " WHERE u.id = %s", (usuario_id,)).fetchone()
-        return reconstruir_usuario(row) if row else None
+    def buscar_por_email(self, email, *, bloquear=False):
+        return self._buscar(" WHERE u.email = %s", email, bloquear=bloquear)
+
+    def buscar_por_id(self, usuario_id, *, bloquear=False):
+        return self._buscar(" WHERE u.id = %s", usuario_id, bloquear=bloquear)
 
     def listar(self, laboratorio_id):
         rows = self._conexao.execute(CONSULTA_USUARIOS + " WHERE u.laboratorio_id = %s ORDER BY u.nome, u.id", (laboratorio_id,))

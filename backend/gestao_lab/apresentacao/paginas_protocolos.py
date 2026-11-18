@@ -27,7 +27,7 @@ def lista(usuario, csrf, protocolos, mensagem=""):
         )
     corpo = paginas.aviso(mensagem) + '''
         <p>Os protocolos são compartilhados entre os usuários do mesmo laboratório.
-        O autor assina o PDF no gov.br antes do envio; o PooDev verifica a assinatura. O Chefe realiza a validação administrativa.</p>
+        O autor assina o PDF no gov.br antes do envio. O sistema verifica a assinatura. O Chefe realiza a validação administrativa.</p>
         <div class="acoes"><a class="botao" href="/protocolos/novo">Adicionar protocolo</a></div>
         <div class="tabela"><table><thead><tr>
             <th>Título</th><th>Autor</th><th>Situação</th><th>Cadastro</th><th>Arquivo</th>
@@ -40,7 +40,7 @@ def lista(usuario, csrf, protocolos, mensagem=""):
 def novo(usuario, csrf, mensagem="", titulo=""):
     corpo = paginas.aviso(mensagem, True) + f'''
         <section class="cartao">
-            <p>Assine primeiro o PDF no gov.br e envie o arquivo assinado (até 5 MB). O PooDev verificará sua assinatura, sem modificar o arquivo. A assinatura só será aceita com uma autoridade confiável configurada.</p>
+            <p>Assine primeiro o PDF no gov.br e envie o arquivo assinado (até 5 MB). O sistema verificará sua assinatura, sem modificar o arquivo. A assinatura só será aceita com uma autoridade confiável configurada.</p>
             <form method="post" action="/protocolos/novo" enctype="multipart/form-data">
                 {paginas.oculto(csrf)}
                 {paginas.campo("titulo", "Título", titulo, limite=180)}

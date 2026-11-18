@@ -1,4 +1,4 @@
--- Executar no banco do PooDev após a migração 003.
+-- Executar no banco do sistema após a migração 003.
 BEGIN;
 SET LOCAL search_path = gestao_lab, public;
 

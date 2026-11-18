@@ -63,8 +63,8 @@ class TransportadorSMTP:
         mensagem = EmailMessage()
         mensagem["From"] = _endereco_unico(config.remetente)
         mensagem["To"] = _endereco_unico(destinatario)
-        mensagem["Subject"] = "Nova notificação no PooDev"
-        mensagem.set_content("Você recebeu uma notificação do laboratório. Entre no PooDev e abra Notificações para consultar os detalhes.")
+        mensagem["Subject"] = "Nova notificação do laboratório"
+        mensagem.set_content("Você recebeu uma notificação do laboratório. Entre no sistema e abra Notificações para consultar os detalhes.")
 
         if config.seguranca == "tls":
             smtp = smtplib.SMTP_SSL(config.host, config.porta, timeout=10, context=self._contexto)

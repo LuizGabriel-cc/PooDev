@@ -2,6 +2,8 @@
 
 Projeto da disciplina Paradigma Orientado a Objetos para Desenvolvimento de Software, do curso de Ciência da Computação da UENF.
 
+Use **Sistema de Gestão de Laboratório de Pesquisa** na documentação do sistema. Em espaços reduzidos, use **Gestão de Laboratório**. PooDev identifica a disciplina.
+
 O sistema será desenvolvido para cadastrar usuários e organizar o uso dos recursos do laboratório. A programação é feita em Python pelo VS Code. O PostgreSQL armazena os dados e o pgAdmin é usado para instalar e consultar o banco.
 
 ## Organização
@@ -20,6 +22,7 @@ O sistema será desenvolvido para cadastrar usuários e organizar o uso dos recu
 - [Pendências e alertas de estoque](docs/README_Ajustes_Estoque.md).
 - [Verificação de assinaturas gov.br](docs/README_Etapa6_Validacao_Assinaturas.md).
 - [Etapa 7 — Restrições, manutenção, ocorrências e e-mail institucional](docs/README_Etapa7.md).
+- [Etapa 8 — Instalação do sistema e acesso offline](docs/README_Etapa8.md).
 - [Proposta inicial do projeto](docs/SistemaDeGestaoDeLaboratorio.pdf).
 
 ## Instalação e testes

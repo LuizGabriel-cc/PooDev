@@ -1,5 +1,7 @@
 import http.cookiejar
+import json
 import re
+import struct
 import threading
 from dataclasses import replace
 from types import SimpleNamespace
@@ -85,7 +87,7 @@ def enviar_login(cliente, formulario):
                              "email": "chefe.a@example.org", "senha": "SenhaFicticia2026!"})
 
 
-@pytest.mark.parametrize("arquivo", ["/favicon.ico", "/imagem-inexistente.png", "/manifest.webmanifest"])
+@pytest.mark.parametrize("arquivo", ["/favicon.ico", "/imagem-inexistente.png", "/inexistente.webmanifest"])
 def test_arquivo_inexistente_nao_invalida_login(sistema_http, arquivo):
     cliente = sistema_http.cliente
     formulario = cliente.requisitar("/entrar")
@@ -99,6 +101,44 @@ def test_arquivo_inexistente_nao_invalida_login(sistema_http, arquivo):
     assert cliente.cookie("lab_form") == cookie
     assert enviar_login(cliente, formulario).status == 200
     assert sistema_http.auth.tentativas == 1
+
+
+def test_arquivos_pwa_sao_publicos_e_preservam_formulario_de_login(sistema_http):
+    cliente = sistema_http.cliente
+    formulario = cliente.requisitar("/entrar")
+    desafio = cliente.cookie("lab_form")
+    assert 'rel="manifest" href="/manifest.webmanifest"' in formulario.body
+    assert 'src="/registrar-pwa.js"' in formulario.body
+
+    for rota, tipo in {
+        "/manifest.webmanifest": "application/manifest+json",
+        "/service-worker.js": "text/javascript",
+        "/registrar-pwa.js": "text/javascript",
+        "/ajuda": "text/html",
+        "/offline": "text/html",
+    }.items():
+        resposta = cliente.requisitar(rota)
+        assert resposta.status == 200
+        assert resposta.headers.get_content_type() == tipo
+        assert resposta.headers.get("Set-Cookie") is None
+        assert 'name="csrf"' not in resposta.body
+
+    manifest = json.loads(cliente.requisitar("/manifest.webmanifest").body)
+    assert (manifest["start_url"], manifest["scope"], manifest["display"]) == ("/", "/", "standalone")
+    assert {icone["sizes"] for icone in manifest["icons"]} == {"192x192", "512x512"}
+    for icone in manifest["icons"]:
+        with cliente.opener.open(cliente.endereco + icone["src"], timeout=5) as resposta:
+            assert resposta.headers.get_content_type() == "image/png"
+            assert resposta.headers.get("Set-Cookie") is None
+            cabecalho = resposta.read(24)
+        assert cabecalho[:8] == b"\x89PNG\r\n\x1a\n"
+        assert struct.unpack(">II", cabecalho[16:24]) == tuple(map(int, icone["sizes"].split("x")))
+
+    assert cliente.cookie("lab_form") == desafio
+    perfil = enviar_login(cliente, formulario)
+    assert perfil.status == 200
+    assert perfil.headers.get("Cache-Control") == "no-store"
+    assert "Chefe de teste" in perfil.body
 
 
 def test_login_antigo_apos_reinicio_exibe_novo_formulario(sistema_http):

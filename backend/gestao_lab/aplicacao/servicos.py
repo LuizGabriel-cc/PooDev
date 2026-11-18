@@ -41,7 +41,8 @@ class ServicoAutenticacao:
 
     def entrar(self, email: str, senha: str) -> str:
         with self._transacao() as tx:
-            usuario = tx.usuarios.buscar_por_email(email.strip().lower())
+            # A redefinição de senha revoga as sessões sob o mesmo bloqueio.
+            usuario = tx.usuarios.buscar_por_email(email.strip().lower(), bloquear=True)
             correto = self._senhas.verificar(senha, usuario.senha_hash if usuario else self._hash_ficticio)
             if not correto or usuario is None or not usuario.ativo or not tx.laboratorios.esta_ativo(usuario.laboratorio_id):
                 raise CredenciaisInvalidas("E-mail ou senha inválidos.")
@@ -129,7 +130,7 @@ class ServicoCadastro:
                 tx, token, para_remocao=True
             )
 
-            alvo = tx.usuarios.buscar_por_id(usuario_id)
+            alvo = tx.usuarios.buscar_por_id(usuario_id, bloquear=True)
 
             if alvo is None or alvo.laboratorio_id != ator.laboratorio_id:
                 raise DadosInvalidos(
@@ -165,7 +166,9 @@ class ServicoCadastro:
             base = dict(nome=dados.nome, email=dados.email, laboratorio_id=ator.laboratorio_id, senha_hash="")
             if perfil == Perfil.ALUNO:
                 usuario = Aluno(**base, matricula=dados.matricula, tipo=dados.tipo, orientador_id=dados.orientador_id)
-                usuario.validar_orientador(tx.usuarios.buscar_por_id(usuario.orientador_id))
+                # O orientador deve permanecer ativo até a gravação do aluno.
+                orientador = tx.usuarios.buscar_por_id(usuario.orientador_id, bloquear=True)
+                usuario.validar_orientador(orientador)
             elif perfil == Perfil.PROFESSOR:
                 usuario = Professor(**base, programa_pos=dados.programa_pos, ramal=dados.ramal)
             else:
@@ -933,7 +936,7 @@ class ServicoConfiguracaoInicial:
         email = normalizar_email(email)
         senha_hash = self._senhas.gerar_hash(senha)
         with self._transacao() as tx:
-            usuario = tx.usuarios.buscar_por_email(email)
+            usuario = tx.usuarios.buscar_por_email(email, bloquear=True)
             if usuario is None:
                 raise DadosInvalidos("Usuário não encontrado.")
             tx.contexto(None, "Redefinição de senha pelo operador local")

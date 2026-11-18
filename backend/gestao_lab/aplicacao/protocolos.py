@@ -82,7 +82,7 @@ class ServicoProtocolos:
 
     def assinar(self, token, protocolo_id):
         raise DadosInvalidos(
-            "Não é possível assinar pelo PooDev. Assine no gov.br e envie o PDF assinado."
+            "Não é possível assinar pelo sistema. Assine no gov.br e envie o PDF assinado."
         )
 
     def verificar_assinatura(self, token, protocolo_id):

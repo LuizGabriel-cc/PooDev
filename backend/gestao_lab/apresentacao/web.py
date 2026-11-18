@@ -21,6 +21,14 @@ from . import paginas_estoque
 from ..dominio.protocolos import LIMITE_PDF_BYTES
 
 ROTAS_OPERACOES = frozenset({"/restricoes", "/manutencao", "/ocorrencias", "/notificacoes"})
+ARQUIVOS_PUBLICOS = {
+    "/estilo.css": ("estilo.css", "text/css; charset=utf-8"),
+    "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"),
+    "/service-worker.js": ("service-worker.js", "text/javascript; charset=utf-8"),
+    "/registrar-pwa.js": ("registrar-pwa.js", "text/javascript; charset=utf-8"),
+    "/pwa/icone-192.png": ("icone-192.png", "image/png"),
+    "/pwa/icone-512.png": ("icone-512.png", "image/png"),
+}
 
 @dataclass
 class Resposta:
@@ -609,13 +617,22 @@ class AplicacaoWeb:
                     raise AcessoNegado("Endereço de origem inválido.") from erro
                 if (origem_url.scheme, origem_url.netloc) != (environ.get("wsgi.url_scheme", "http"), host):
                     raise AcessoNegado("Abra o formulário neste endereço para continuar.")
+        arquivo = ARQUIVOS_PUBLICOS.get(rota)
+        if arquivo and metodo == "GET":
+            nome, tipo = arquivo
+            return Resposta(
+                (Path(__file__).parent / nome).read_bytes(),
+                headers=[("Content-Type", tipo)],
+            )
+        if metodo == "GET" and rota == "/ajuda":
+            return Resposta(paginas.ajuda())
+        if metodo == "GET" and rota == "/offline":
+            return Resposta(paginas.offline())
         try:
             cookies = SimpleCookie(environ.get("HTTP_COOKIE", ""))
             token = cookies["lab_sessao"].value if "lab_sessao" in cookies else ""
         except CookieError:
             token, cookies = "", SimpleCookie()
-        if rota == "/estilo.css" and metodo == "GET":
-            return Resposta((Path(__file__).parent / "estilo.css").read_bytes(), headers=[("Content-Type", "text/css; charset=utf-8")])
         if rota == "/entrar":
             if metodo == "GET":
                 return self._login()

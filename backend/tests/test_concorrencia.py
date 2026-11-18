@@ -1,11 +1,16 @@
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from queue import Queue
+from threading import Barrier, Event
+from time import monotonic, sleep
 
 from types import SimpleNamespace
 import psycopg
 import pytest
 
-from gestao_lab.dominio.erros import DadosInvalidos
+from gestao_lab.aplicacao.servicos import DadosCadastro
+from gestao_lab.dominio.erros import CredenciaisInvalidas, DadosInvalidos
+from gestao_lab.dominio.usuarios import Aluno, Perfil
+from gestao_lab.infraestrutura.postgres import SessoesPostgres, UsuariosPostgres
 
 pytestmark = [pytest.mark.integracao, pytest.mark.concorrencia]
 
@@ -62,3 +67,94 @@ def test_mesma_copia_nao_e_entregue_a_dois_portadores_simultaneamente(sistema, r
     competir(lambda: sistema.chaves.retirar(sistema.token, chave.id, a.id),
              lambda: sistema.chaves.retirar(sistema.token, chave.id, b.id), "retirada em aberto")
     assert len(sistema.chaves.painel(sistema.token)[2]) == 1
+
+
+def aguardar_bloqueio(conn, pid, operacao):
+    limite = monotonic() + 10
+    while monotonic() < limite and not operacao.done():
+        aguardando = conn.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM pg_locks
+                WHERE NOT granted AND %s = ANY(pg_blocking_pids(pid))
+            )
+        """, (pid,)).fetchone()[0]
+        if aguardando:
+            return
+        sleep(0.02)
+    pytest.fail("A operação deveria aguardar o bloqueio de outra transação.")
+
+
+def test_login_com_senha_anterior_aguarda_redefinicao(sistema, monkeypatch):
+    pid_bloqueador = Queue()
+    liberar = Event()
+    revogar = SessoesPostgres.revogar_do_usuario
+
+    def revogar_e_aguardar(repo, usuario_id):
+        revogar(repo, usuario_id)
+        pid_bloqueador.put(repo._conexao.info.backend_pid)
+        assert liberar.wait(timeout=20)
+
+    monkeypatch.setattr(SessoesPostgres, "revogar_do_usuario", revogar_e_aguardar)
+    nova_senha = "OutraSenhaFicticia2026!"
+    with ThreadPoolExecutor(max_workers=2) as pool, psycopg.connect(sistema.url) as conn:
+        redefinicao = pool.submit(sistema.inicial.definir_senha, sistema.chefe.email, nova_senha)
+        try:
+            pid = pid_bloqueador.get(timeout=10)
+            login = pool.submit(sistema.auth.entrar, sistema.chefe.email, sistema.senha)
+            aguardar_bloqueio(conn, pid, login)
+        finally:
+            liberar.set()
+        redefinicao.result(timeout=10)
+        with pytest.raises(CredenciaisInvalidas):
+            login.result(timeout=10)
+
+    assert sistema.auth.identificar(sistema.token) is None
+    novo_token = sistema.auth.entrar(sistema.chefe.email, nova_senha)
+    assert sistema.auth.identificar(novo_token).id == sistema.chefe.id
+
+
+def test_professor_nao_pode_ser_desativado_durante_cadastro_de_orientando(sistema, dados_professor,
+                                                                       monkeypatch):
+    professor = sistema.cadastro.cadastrar(sistema.token, Perfil.PROFESSOR, dados_professor)
+    dados = DadosCadastro(nome="Orientando de teste", email=f"aluno.{sistema.chave}@example.org",
+                          senha=sistema.senha, matricula=sistema.chave, orientador_id=professor.id)
+    pid_bloqueador = Queue()
+    liberar = Event()
+    salvar = UsuariosPostgres.salvar
+
+    def salvar_e_aguardar(repo, usuario):
+        if isinstance(usuario, Aluno):
+            pid_bloqueador.put(repo._conexao.info.backend_pid)
+            assert liberar.wait(timeout=20)
+        return salvar(repo, usuario)
+
+    monkeypatch.setattr(UsuariosPostgres, "salvar", salvar_e_aguardar)
+    with ThreadPoolExecutor(max_workers=2) as pool, psycopg.connect(sistema.url) as conn:
+        cadastro = pool.submit(sistema.cadastro.cadastrar, sistema.token, Perfil.ALUNO, dados)
+        try:
+            pid = pid_bloqueador.get(timeout=10)
+            remocao = pool.submit(sistema.cadastro.remover, sistema.token, professor.id)
+            aguardar_bloqueio(conn, pid, remocao)
+        finally:
+            liberar.set()
+        assert cadastro.result(timeout=10).orientador_id == professor.id
+        with pytest.raises(DadosInvalidos, match="orienta alunos ativos"):
+            remocao.result(timeout=10)
+
+
+def test_designacao_aguarda_laboratorio_sem_bloquear_copia(sistema, recursos, portador):
+    usuario, _ = portador
+    chave = sistema.chaves.cadastrar(sistema.token, codigo_copia=f"DES-{sistema.chave}",
+                                     destino_id=recursos[0].id)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with psycopg.connect(sistema.url) as conn:
+            conn.execute("SELECT id FROM gestao_lab.laboratorio WHERE id=%s FOR UPDATE",
+                         (sistema.chefe.laboratorio_id,))
+            designacao = pool.submit(sistema.chaves.designar, sistema.token, chave.id, usuario.id)
+            aguardar_bloqueio(conn, conn.info.backend_pid, designacao)
+            # É a próxima trava que uma retirada de chave obteria após travar o laboratório.
+            conn.execute("SELECT id FROM gestao_lab.chave WHERE id=%s FOR UPDATE NOWAIT", (chave.id,))
+        designacao.result(timeout=10)
+
+    assert sistema.chaves.consultar_gestao(sistema.token, chave.id)[0].designada_para == usuario.id

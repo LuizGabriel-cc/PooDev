@@ -1,4 +1,4 @@
-# PooDev — semanas 5 e 6: estoque e protocolos
+# Semanas 5 e 6 — Estoque e protocolos
 
 As semanas 5 e 6 acrescentam dois módulos ao Sistema de Gestão de Laboratório de Pesquisa. O primeiro registra materiais por lote, suas quantidades, movimentações e alertas. O segundo gerencia protocolos em PDF, desde o cadastro até a validação pelo Chefe e o vínculo com equipamentos.
 

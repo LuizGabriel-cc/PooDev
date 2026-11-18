@@ -1,4 +1,4 @@
--- PooDev: pendências atuais e ciclo de notificações do estoque.
+-- Pendências atuais e ciclo de notificações do estoque.
 -- Aplicar uma única vez em banco existente na versão 1, preservando os dados.
 BEGIN;
 SET LOCAL search_path = gestao_lab, public;

@@ -40,9 +40,48 @@ def layout(titulo, conteudo, usuario=None, csrf=""):
         nav = f'<nav>{links}<form method="post" action="/sair">{oculto(csrf)}<button class="secundario">Sair</button></form></nav>'
     return f'''<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{escape(titulo)} · Gestão de Laboratório</title><link rel="stylesheet" href="/estilo.css"></head>
-<body><header><a class="marca" href="/">Gestão de Laboratório</a>{nav}</header>
+<title>{escape(titulo)} · Sistema de Gestão de Laboratório de Pesquisa</title>
+<meta name="theme-color" content="#132e3d">
+<link rel="stylesheet" href="/estilo.css">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/pwa/icone-192.png" type="image/png" sizes="192x192">
+<script src="/registrar-pwa.js" defer></script></head>
+<body><header><a class="marca" href="/">Gestão de Laboratório</a>{nav}<a href="/ajuda">Ajuda</a></header>
 <main><h1>{escape(titulo)}</h1>{conteudo}</main></body></html>'''
+
+
+def ajuda():
+    return layout("Ajuda do laboratório", """
+        <section class="cartao">
+            <h2>Instalar o aplicativo</h2>
+            <p>No Edge ou no Chrome, abra o menu do navegador e escolha a opção de instalar
+            este aplicativo. Use sempre o mesmo endereço para abrir o sistema.</p>
+            <h2>Consultar e operar</h2>
+            <ul>
+                <li>Use <strong>Recursos</strong> para consultar salas, bancadas e equipamentos.</li>
+                <li>Use <strong>Reservas</strong> para acompanhar solicitações e
+                <strong>Chaves</strong> para consultar cópias e empréstimos.</li>
+                <li>Use <strong>Protocolos</strong> para consultar documentos de segurança.</li>
+                <li>Use <strong>Notificações</strong> para acompanhar seus avisos.</li>
+            </ul>
+            <p>Esta ajuda pode ser consultada offline após o primeiro acesso online.
+            Conecte-se ao servidor para entrar, consultar dados do laboratório e salvar operações.</p>
+            <a class="botao" href="/">Abrir o sistema</a>
+        </section>
+    """)
+
+
+def offline():
+    return layout("Servidor indisponível", """
+        <section class="cartao">
+            <p>O sistema não conseguiu se conectar ao servidor. A ajuda continua disponível.
+            O acesso aos dados do laboratório e o envio de formulários dependem da conexão.</p>
+            <div class="acoes">
+                <a class="botao" href="/">Tentar novamente</a>
+                <a href="/ajuda">Consultar ajuda</a>
+            </div>
+        </section>
+    """)
 
 
 def aviso(mensagem, erro=False):

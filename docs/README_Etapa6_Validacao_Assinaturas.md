@@ -1,11 +1,11 @@
 # Verificação de assinaturas digitais em protocolos
 
-O autor assina o PDF no gov.br antes do envio. O PooDev confere as assinaturas com as autoridades configuradas e compara os nomes dos certificados com o nome do autor do protocolo. O Chefe do Laboratório confere o conteúdo e a identidade do signatário antes de confirmar a validação administrativa. Nomes iguais podem pertencer a pessoas diferentes.
+O autor assina o PDF no gov.br antes do envio. O sistema confere as assinaturas com as autoridades configuradas e compara os nomes dos certificados com o nome do autor do protocolo. O Chefe do Laboratório confere o conteúdo e a identidade do signatário antes de confirmar a validação administrativa. Nomes iguais podem pertencer a pessoas diferentes.
 
 ## Instalação e configuração
 
 1. Instale o suplemento com `python -m pip install -r backend/requirements-assinatura.txt`, a partir da raiz do projeto.
-2. Aplique as migrações em ordem até a [004](../database/migrations/004_assinatura_pdf.sql). Ela registra a política e o SHA-256 do PDF em novos cadastros verificados. A data `assinado_em` indica quando o PooDev registrou a verificação.
+2. Aplique as migrações em ordem até a [004](../database/migrations/004_assinatura_pdf.sql). Ela registra a política e o SHA-256 do PDF em novos cadastros verificados. A data `assinado_em` indica quando o sistema registrou a verificação.
 3. Obtenha a cadeia oficial e confira a origem dos certificados e das listas. Mantenha esses arquivos em local controlado pelo operador. [Cadeia de certificados gov.br](https://www.gov.br/governodigital/pt-br/identidade/assinatura-eletronica/saiba-como-importar-os-certificados-do-gov-br-no-adobe-acrobat-reader)
 4. Configure as variáveis no ambiente usado para iniciar a aplicação. Separe múltiplos caminhos por ponto e vírgula no Windows ou dois-pontos no Linux e macOS.
 
@@ -17,7 +17,7 @@ O autor assina o PDF no gov.br antes do envio. O PooDev confere as assinaturas c
 
 A validação roda offline. O pyHanko usa as LCRs configuradas e pode validar dados de revogação embutidos no PDF. A política exige evidência de revogação quando o certificado declara um ponto de distribuição de LCR ou OCSP. Sem evidência utilizável, o resultado é `INDETERMINADA`. Listas do gov.br podem ter janela de validade de poucas horas. O operador precisa renovar as listas para novos cadastros e validações.
 
-Se o PDF contiver carimbos de tempo, o PooDev os confere com a cadeia de confiança configurada e verifica as revisões cobertas. A política confere a vigência atual da cadeia. Arquivamento criptográfico de longo prazo e atestação oficial de conformidade exigem outro fluxo. [Documentação de validação pyHanko](https://docs.pyhanko.eu/en/stable/api-docs/pyhanko.sign.validation.html) [VALIDAR do ITI](https://validar.iti.gov.br/sobre.html)
+Se o PDF contiver carimbos de tempo, o sistema os confere com a cadeia de confiança configurada e verifica as revisões cobertas. A política confere a vigência atual da cadeia. Arquivamento criptográfico de longo prazo e atestação oficial de conformidade exigem outro fluxo. [Documentação de validação pyHanko](https://docs.pyhanko.eu/en/stable/api-docs/pyhanko.sign.validation.html) [VALIDAR do ITI](https://validar.iti.gov.br/sobre.html)
 
 ## Consulta, validação e protocolos existentes
 
