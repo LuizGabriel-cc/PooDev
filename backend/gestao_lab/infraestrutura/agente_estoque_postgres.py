@@ -6,6 +6,17 @@ class RepositorioAgenteEstoquePostgres:
     def __init__(self, conexao):
         self._conexao = conexao
 
+    def itens_para_monitoramento(self):
+        """Candidatos do job interno; cada lote é revalidado na sua transação."""
+        return self._conexao.execute("""
+            SELECT i.laboratorio_id, i.id AS item_id
+            FROM gestao_lab.item_estoque i
+            JOIN gestao_lab.laboratorio l ON l.id = i.laboratorio_id
+            JOIN gestao_lab.usuario u ON u.id = l.chefe_usuario_id
+            WHERE i.ativo AND l.ativo AND u.ativo
+            ORDER BY i.laboratorio_id, i.id
+        """).fetchall()
+
     def historico(self, laboratorio_id, item_id, desde, *, bloquear=False):
         if bloquear:
             # Serializa análise/gravação com movimentações do mesmo lote.
@@ -79,6 +90,22 @@ class RepositorioAgenteEstoquePostgres:
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
         """, (*args, *campos)).fetchone()
+        # Notificação interna + fila SMTP, somente em novas recomendações.
+        # Atualizações da evidência não geram mensagens repetidas.
+        self._conexao.execute("""
+            SELECT gestao_lab.notificar(
+                l.id, l.chefe_usuario_id, 'AGENTE_ESTOQUE',
+                %s, jsonb_build_object('recomendacao_id', %s::bigint,
+                                      'item_id', %s::bigint), %s)
+            FROM gestao_lab.laboratorio l
+            JOIN gestao_lab.usuario u ON u.id = l.chefe_usuario_id
+            WHERE l.id = %s AND l.ativo AND u.ativo
+        """, (
+            f"O agente identificou risco preventivo no lote {analise.nome} / "
+            f"{analise.lote}. Consulte Agente de estoque para avaliar a recomendação.",
+            linha["id"], analise.item_id, f"agente-estoque:{linha['id']}",
+            analise.laboratorio_id,
+        ))
         return linha["id"]
 
     def listar_recomendacoes(self, laboratorio_id):

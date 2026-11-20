@@ -51,6 +51,40 @@ class ServicoAgenteEstoque:
                     tx.agente_estoque.registrar(analise)
             return resultados
 
+    def analisar_automaticamente(self, *, agora=None):
+        """Rotina INTERNA do servidor, sem acesso por requisição web.
+
+        Não impersona Chefe nem toma decisões humanas. O acesso aos dados é
+        do serviço confiável e cada lote é processado em uma transação curta.
+        Se falhar, o monitor captura o erro sem impedir as operações normais.
+        """
+        momento = agora or datetime.now(timezone.utc)
+        with self._transacao() as tx:
+            candidatos = tx.agente_estoque.itens_para_monitoramento()
+        resultado = {"lotes": 0, "riscos": 0}
+        for candidato in candidatos:
+            lab, item_id = candidato["laboratorio_id"], candidato["item_id"]
+            with self._transacao() as tx:
+                laboratorio = tx.laboratorios.buscar_por_id(lab)
+                if laboratorio is None or not laboratorio.ativo:
+                    continue
+                movimentos, primeiro, ultimo_id = tx.agente_estoque.historico(
+                    lab, item_id,
+                    momento - timedelta(days=self._agente.parametros.janela_dias),
+                    bloquear=True,
+                )
+                item = tx.estoque.buscar(item_id, lab)
+                if item is None or not item.ativo:
+                    continue
+                analise = self._agente.analisar(
+                    item, movimentos, primeiro, ultimo_id, agora=momento
+                )
+                resultado["lotes"] += 1
+                if analise.situacao == "REPOSICAO_SUGERIDA":
+                    tx.agente_estoque.registrar(analise)
+                    resultado["riscos"] += 1
+        return resultado
+
     def listar_recomendacoes(self, token):
         with self._transacao() as tx:
             _, laboratorio = self._chefe_e_laboratorio(tx, token)

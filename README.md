@@ -23,7 +23,7 @@ O sistema será desenvolvido para cadastrar usuários e organizar o uso dos recu
 - [Assinatura RSA de protocolos](docs/README_Etapa6_Validacao_Assinaturas.md).
 - [Etapa 7 — Restrições, manutenção, ocorrências e e-mail institucional](docs/README_Etapa7.md).
 - [Etapa 8 — Instalação do sistema e acesso offline](docs/README_Etapa8.md).
-- **[Novo: protótipo do Agente Especialista de Estoque (RF26/RF29)](GUIA_AGENTE_ESTOQUE.md)** — documentação, migração 006, parâmetros, testes e limitações. Os documentos de etapas anteriores descrevem o estado do projeto à época de cada entrega.
+- **[Agente Especialista de Estoque V2 (RF26/RF29)](GUIA_AGENTE_ESTOQUE.md)** — documentação, migração 006, parâmetros, testes e limitações. Os documentos de etapas anteriores descrevem o estado do projeto à época de cada entrega.
 - [Proposta inicial do projeto](docs/SistemaDeGestaoDeLaboratorio.pdf).
 
 ## Instalação e testes
@@ -34,3 +34,14 @@ O sistema será desenvolvido para cadastrar usuários e organizar o uso dos recu
 4. Use **Laboratório: criar Chefe inicial** para preparar um banco vazio e **Laboratório: iniciar sistema** para abrir a aplicação local.
 
 Execute `python -m pytest -m "not integracao"` em `backend/` para os testes sem PostgreSQL. A suíte de integração usa um banco descartável em `TEST_DATABASE_URL`. O [guia do PostgreSQL](database/README.md) descreve seu preparo e os scripts SQL de teste.
+
+
+### Agente especialista — melhorias da versão 2
+
+A implementação contém base de conhecimento com regras identificadas, comparação do MAE com uma referência simples e monitoramento preventivo automático (enquanto o servidor local estiver ligado). Cada recomendação nova é enviada à área de notificações; a aceitação ou o descarte continua exclusiva do Chefe. A instalação usa o mesmo schema **até a migração 006**. Instruções e limitações estão em [GUIA_AGENTE_ESTOQUE.md](GUIA_AGENTE_ESTOQUE.md).
+
+Demonstração sem banco, na pasta `backend`:
+
+```bash
+python -m gestao_lab.dominio.demo_agente_estoque
+```

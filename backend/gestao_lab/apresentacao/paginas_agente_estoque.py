@@ -26,6 +26,9 @@ def painel(chefe, csrf, analises, recomendacoes, mensagem=""):
         'O agente não compra materiais, não modifica o estoque e não substitui o Chefe. '
         'Parâmetros provisórios: últimos 30 dias, pelo menos 7 dias de histórico e '
         'consumo em 3 dias distintos. Alerta preventivo: 7 dias.</p>'
+        '<p>A análise automática é executada periodicamente enquanto o servidor local '
+        'estiver ligado. Novas recomendações aparecem aqui e na área de '
+        '<a href="/notificacoes">Notificações</a>.</p>'
         '<p>A classificação considera apenas saídas por <strong>USO</strong>; '
         'descartes e entradas não são consumo. Movimentações sem finalidade '
         'classificada tornam o resultado inconclusivo.</p>'
@@ -36,7 +39,7 @@ def painel(chefe, csrf, analises, recomendacoes, mensagem=""):
     )
     corpo += (
         '<section class="cartao"><h2>Projeções atuais por lote</h2>'
-        '<p>As análises abaixo são consultivas. Apenas o botão acima registra recomendações.</p>'
+        '<p>As projeções abaixo são consultivas. O botão acima ou o monitor automático podem registrar recomendações de risco.</p>'
         '<div class="tabela"><table><thead><tr>'
         '<th>Item / lote</th><th>Saldo / mínimo</th><th>Histórico</th>'
         '<th>Consumo médio</th><th>Previsão</th><th>Conclusão</th>'
@@ -52,9 +55,14 @@ def painel(chefe, csrf, analises, recomendacoes, mensagem=""):
         )
         corpo += '<tr>' + ''.join(f'<td>{_txt(c)}</td>' for c in campos)
         corpo += (f'<td><strong>{_txt(ROTULOS.get(a.situacao, a.situacao))}</strong>'
+                  f'<p>Regra aplicada: {_txt(a.regra_aplicada)}</p>'
                   f'<p>{_txt(a.justificativa)}</p>'
                   + (f'<p>MAE retrospectivo (7 dias): {_txt(a.mae)} {_txt(a.unidade)}/dia</p>'
-                     if a.mae is not None else '') + '</td></tr>')
+                     if a.mae is not None else '')
+                  + (f'<p>MAE de referência: {_txt(a.mae_referencia)} {_txt(a.unidade)}/dia; '
+                     f'estabilidade retrospectiva: {_txt(a.qualidade)}</p>'
+                     if a.mae_referencia is not None else '<p>Validação retrospectiva indisponível.</p>')
+                  + '</td></tr>')
     if not analises:
         corpo += '<tr><td colspan="6">Não há lotes ativos para analisar.</td></tr>'
     corpo += '</tbody></table></div></section>'

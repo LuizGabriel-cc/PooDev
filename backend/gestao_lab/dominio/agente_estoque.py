@@ -10,6 +10,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from .erros import DadosInvalidos
 from .estoque import ItemEstoque, MovimentacaoEstoque
+from .regras_especialistas_estoque import FatosEstoque, MotorInferenciaEstoque
 
 FUSO_LABORATORIO = timezone(timedelta(hours=-3))  # Consistente com o fuso da aplicação.
 
@@ -49,6 +50,9 @@ class AnaliseEstoque:
     consumo_diario: Decimal | None
     previsao_dias: Decimal | None
     mae: Decimal | None
+    mae_referencia: Decimal | None
+    qualidade: str  # ESTAVEL, VARIAVEL ou NAO_AVALIADA; não é probabilidade
+    regra_aplicada: str
     ultimo_movimento_id: int | None
     situacao: str  # INCONCLUSIVA, MINIMO_ATINGIDO, NORMAL, REPOSICAO_SUGERIDA
     justificativa: str
@@ -59,6 +63,7 @@ class AgenteEspecialistaEstoque:
 
     def __init__(self, parametros: ParametrosAgenteEstoque | None = None):
         self.parametros = parametros or ParametrosAgenteEstoque()
+        self._motor = MotorInferenciaEstoque()
 
     def analisar(
         self,
@@ -89,76 +94,97 @@ class AgenteEspecialistaEstoque:
         consumo_total = sum((-m.variacao for m in usos), Decimal("0"))
         datas_consumo = {m.criado_em.astimezone(FUSO_LABORATORIO).date() for m in usos}
 
-        def resposta(situacao: str, texto: str, media=None, dias=None, mae=None):
-            return AnaliseEstoque(
-                laboratorio_id=item.laboratorio_id, item_id=item.id,
-                nome=item.nome, lote=item.lote, unidade=item.unidade,
-                saldo=item.quantidade, limite_minimo=item.limite_estoque_baixo,
-                instante=instante, inicio_janela=janela,
-                dias_observados=dias_observados, dias_com_consumo=len(datas_consumo),
-                consumo_total=consumo_total, consumo_diario=media,
-                previsao_dias=dias, mae=mae, ultimo_movimento_id=ultimo_movimento_id,
-                situacao=situacao, justificativa=texto,
-            )
-
-        if item.quantidade <= item.limite_estoque_baixo:
-            return resposta("MINIMO_ATINGIDO", "O limite mínimo já foi atingido; o alerta normal de estoque (RF08) permanece independente.")
-        if item.validade is not None and item.validade < instante.astimezone(FUSO_LABORATORIO).date():
-            return resposta("INCONCLUSIVA", "Lote vencido: não é confiável projetar consumo de uso; consulte os alertas de validade (RF08).")
-        if nao_classificadas:
-            return resposta("INCONCLUSIVA", "Existem saídas históricas sem finalidade classificada; não foram tratadas como consumo.")
-        if dias_observados < self.parametros.minimo_dias_observados:
-            return resposta("INCONCLUSIVA", f"Apenas {dias_observados} dia(s) observados; mínimo provisório: {self.parametros.minimo_dias_observados}.")
-        if len(datas_consumo) < self.parametros.minimo_dias_com_consumo:
-            return resposta("INCONCLUSIVA", f"Consumo em {len(datas_consumo)} dia(s); mínimo provisório: {self.parametros.minimo_dias_com_consumo} dias distintos.")
-        if consumo_total <= 0:
-            return resposta("INCONCLUSIVA", "Não há consumo efetivo suficiente; nenhuma previsão foi estimada.")
-
-        media = consumo_total / Decimal(dias_observados)
-        if media <= 0:
-            return resposta("INCONCLUSIVA", "Não foi possível estimar o consumo diário.")
+        # Calcula os fatos ANTES de inferir: a política de decisão está na base
+        # de conhecimento, não em uma sequência opaca de ifs da camada web.
+        media = (consumo_total / Decimal(dias_observados)
+                 if consumo_total > 0 and dias_observados > 0 else None)
         prazo = ((item.quantidade - item.limite_estoque_baixo) / media).quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
+        ) if media and item.quantidade > item.limite_estoque_baixo else None
+        expirado = (item.validade is not None
+                    and item.validade < instante.astimezone(FUSO_LABORATORIO).date())
+        fatos = FatosEstoque(
+            minimo_atingido=item.quantidade <= item.limite_estoque_baixo,
+            lote_vencido=expirado,
+            saidas_sem_classificacao=len(nao_classificadas),
+            dias_observados=dias_observados,
+            minimo_dias_observados=self.parametros.minimo_dias_observados,
+            dias_com_consumo=len(datas_consumo),
+            minimo_dias_com_consumo=self.parametros.minimo_dias_com_consumo,
+            consumo_total=consumo_total, consumo_diario=media,
+            previsao_dias=prazo, antecedencia_dias=self.parametros.antecedencia_dias,
         )
-        mae = self._mae_retrospectivo(usos, inicio, instante)
-        texto = (
-            f"Foram considerados {consumo_total} {item.unidade} consumidos em "
-            f"{len(datas_consumo)} dias com saídas por USO, durante {dias_observados} dias "
-            f"observados. Ritmo médio: {media.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)} "
-            f"{item.unidade}/dia. Estimativa: {prazo} dia(s) até o mínimo, "
-            f"supondo consumo médio constante. Entradas e descartes não são consumo. "
-            f"Reavaliar quando novas movimentações forem registradas."
+        regra, situacao, explicacao = self._motor.inferir(fatos)
+        calculavel = situacao in ("NORMAL", "REPOSICAO_SUGERIDA")
+        mae = mae_ref = None
+        qualidade = "NAO_AVALIADA"
+        if calculavel:
+            mae, mae_ref = self._mae_retrospectivo(usos, inicio, instante)
+            if mae is not None:
+                # Classificação qualitativa heurística; não é probabilidade.
+                qualidade = "ESTAVEL" if mae <= media / Decimal("2") else "VARIAVEL"
+            explicacao = (
+                f"Foram considerados {consumo_total} {item.unidade} consumidos em "
+                f"{len(datas_consumo)} dias com saídas por USO, durante {dias_observados} dias "
+                f"observados. Ritmo médio: {media.quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP)} "
+                f"{item.unidade}/dia. Estimativa: {prazo} dia(s) até o mínimo, "
+                f"supondo consumo médio constante. Entradas e descartes não são consumo. "
+                f"Reavaliar quando novas movimentações forem registradas. " + explicacao
+            )
+            if mae is not None:
+                explicacao += (
+                    f" MAE retrospectivo do modelo: {mae} {item.unidade}/dia; "
+                    f"referência ingênua (último dia de treino): {mae_ref} "
+                    f"{item.unidade}/dia; estabilidade heurística: {qualidade}. "
+                    "Essas métricas não garantem acurácia futura."
+                )
+            if item.validade is not None and item.validade <= (
+                instante.astimezone(FUSO_LABORATORIO).date() + timedelta(days=int(prazo))
+            ):
+                explicacao += " A validade pode ocorrer antes de atingir o limite previsto."
+        return AnaliseEstoque(
+            laboratorio_id=item.laboratorio_id, item_id=item.id,
+            nome=item.nome, lote=item.lote, unidade=item.unidade,
+            saldo=item.quantidade, limite_minimo=item.limite_estoque_baixo,
+            instante=instante, inicio_janela=janela,
+            dias_observados=dias_observados, dias_com_consumo=len(datas_consumo),
+            consumo_total=consumo_total,
+            consumo_diario=media if calculavel else None,
+            previsao_dias=prazo if calculavel else None,
+            mae=mae, mae_referencia=mae_ref, qualidade=qualidade,
+            regra_aplicada=regra, ultimo_movimento_id=ultimo_movimento_id,
+            situacao=situacao, justificativa=explicacao,
         )
-        if item.validade is not None and item.validade <= (
-            instante.astimezone(FUSO_LABORATORIO).date() + timedelta(days=int(prazo))
-        ):
-            texto += " A validade pode ocorrer antes de atingir o limite previsto."
-        situacao = ("REPOSICAO_SUGERIDA" if prazo <= self.parametros.antecedencia_dias
-                    else "NORMAL")
-        return resposta(situacao, texto, media, prazo, mae)
 
     @staticmethod
-    def _mae_retrospectivo(usos, inicio: datetime, instante: datetime) -> Decimal | None:
-        """Erro da média histórica dos dias anteriores frente aos 7 dias completos finais."""
+    def _mae_retrospectivo(usos, inicio: datetime, instante: datetime) -> tuple[Decimal | None, Decimal | None]:
+        """Treino anterior à última semana vs 7 dias completos de teste.
+
+        Referência ingênua: consumo no último dia completo do treinamento,
+        repetido nos 7 dias de avaliação. Os dois modelos usam o MESMO corte
+        temporal; jamais utilizam dados do período avaliado para treinar.
+        """
         hoje = instante.astimezone(FUSO_LABORATORIO).date()
         primeiro_dia = inicio.astimezone(FUSO_LABORATORIO).date()
-        primeiro_dia_validacao = hoje - timedelta(days=7)
-        dias_treino = (primeiro_dia_validacao - primeiro_dia).days
+        corte = hoje - timedelta(days=7)
+        dias_treino = (corte - primeiro_dia).days
         if dias_treino < 7:
-            return None
-        treino = sum((-m.variacao for m in usos
-                     if m.criado_em.astimezone(FUSO_LABORATORIO).date() < primeiro_dia_validacao), Decimal("0"))
-        treino_dias_com_consumo = {
-            m.criado_em.astimezone(FUSO_LABORATORIO).date() for m in usos
-            if m.criado_em.astimezone(FUSO_LABORATORIO).date() < primeiro_dia_validacao
-        }
-        if len(treino_dias_com_consumo) < 3:
-            return None
-        media_treino = treino / Decimal(dias_treino)
-        erro = Decimal("0")
+            return None, None
+        diaria = {}
+        for m in usos:
+            dia = m.criado_em.astimezone(FUSO_LABORATORIO).date()
+            diaria[dia] = diaria.get(dia, Decimal("0")) - m.variacao
+        if len([dia for dia, qtd in diaria.items() if primeiro_dia <= dia < corte and qtd > 0]) < 3:
+            return None, None
+        total_treino = sum((qtd for dia, qtd in diaria.items()
+                            if primeiro_dia <= dia < corte), Decimal("0"))
+        media_treino = total_treino / Decimal(dias_treino)
+        referencia = diaria.get(corte - timedelta(days=1), Decimal("0"))
+        erros_modelo = erros_ref = Decimal("0")
         for n in range(7):
-            dia = primeiro_dia_validacao + timedelta(days=n)
-            consumo_dia = sum((-m.variacao for m in usos
-                              if m.criado_em.astimezone(FUSO_LABORATORIO).date() == dia), Decimal("0"))
-            erro += abs(consumo_dia - media_treino)
-        return (erro / Decimal("7")).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            real = diaria.get(corte + timedelta(days=n), Decimal("0"))
+            erros_modelo += abs(real - media_treino)
+            erros_ref += abs(real - referencia)
+        fmt = Decimal("0.0001")
+        return ((erros_modelo / 7).quantize(fmt, rounding=ROUND_HALF_UP),
+                (erros_ref / 7).quantize(fmt, rounding=ROUND_HALF_UP))

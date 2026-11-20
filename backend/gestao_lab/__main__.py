@@ -22,6 +22,7 @@ from .aplicacao.notificacoes import ServicoEnvioEmail, iniciar_envio_email
 from .infraestrutura.smtp import ConfiguracaoSMTP, TransportadorSMTP
 import logging
 from threading import Event, Thread
+import os
 
 class AtendimentoLocal(WSGIRequestHandler):
     def setup(self):
@@ -70,6 +71,27 @@ def iniciar_monitoramento_estoque(transacao):
 
 
 
+
+def iniciar_monitoramento_agente(servico, intervalo_segundos=600):
+    """Reavalia periodicamente enquanto o servidor local estiver rodando.
+
+    A rotina é independente do RF08: uma falha do agente não interrompe os
+    alertas convencionais, as reservas ou outras operações.
+    """
+    parada = Event()
+
+    def verificar():
+        while not parada.is_set():
+            try:
+                servico.analisar_automaticamente()
+            except Exception as erro:
+                logging.getLogger(__name__).warning(
+                    "Agente preventivo indisponível (%s).", type(erro).__name__
+                )
+            parada.wait(intervalo_segundos)
+
+    Thread(target=verificar, name="monitor-agente-estoque", daemon=True).start()
+    return parada
 
 
 def main():
@@ -134,6 +156,10 @@ def main():
             ) as servidor:
                 parada_alertas = iniciar_monitoramento_estoque(transacao)
                 parada_email = None
+                # Pode ser desativado para diagnóstico sem alterar o RF08.
+                parada_agente = (iniciar_monitoramento_agente(agente_estoque)
+                                 if os.environ.get("AGENTE_AUTOMATICO", "1") == "1"
+                                 else None)
                 try:
                     if smtp is not None:
                         parada_email = iniciar_envio_email(ServicoEnvioEmail(transacao, TransportadorSMTP(smtp)))
@@ -145,6 +171,8 @@ def main():
 
                 finally:
                     parada_alertas.set()
+                    if parada_agente is not None:
+                        parada_agente.set()
                     if parada_email is not None:
                         parada_email.set()
 
