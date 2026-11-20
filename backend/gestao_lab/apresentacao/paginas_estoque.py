@@ -1,5 +1,5 @@
 
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 
 from .paginas import (
@@ -122,8 +122,8 @@ def painel(ator, csrf, itens, movimentacoes,
         )
 
     corpo += (
-        '<section class="cartao">'
-        '<h2>Cadastrar item</h2>'
+        '<section class="cartao" id="cadastro">'
+        '<h2>Cadastrar item ou novo lote</h2>'
         '<form method="post" action="/estoque">'
         + oculto(csrf)
         + '<input type="hidden" name="acao" value="cadastrar">'
@@ -138,13 +138,16 @@ def painel(ator, csrf, itens, movimentacoes,
     corpo += (
         '<section class="cartao">'
         '<h2>Entrada e saída de estoque</h2>'
-        '<p>Use valor positivo para entrada '
-        'e negativo para saída.</p>'
+        '<p>Use valor positivo para entrada no mesmo lote e negativo para saída. '
+        'Para material de outro lote ou com outra validade, use <strong>Receber novo lote</strong> '
+        'na tabela de itens cadastrados.</p>'
     )
 
     if ativos:
+        hoje = datetime.now(fuso).date()
         opcoes = [
-            (item.id, f"{item.nome} — lote {item.lote}")
+            (item.id, f"{item.nome} — lote {item.lote}"
+             + (" (vencido: somente descarte)" if item.validade and item.validade < hoje else ""))
             for item in ativos
         ]
 
@@ -192,7 +195,7 @@ def painel(ator, csrf, itens, movimentacoes,
     for item in itens:
         situacao = situacoes.get(item.id, "Normal")
         if not item.ativo:
-            situacao = "Inativo"
+            situacao = "Encerrado"
         elif pendencias is None and item.estoque_baixo():
             situacao = "Estoque baixo"
 
@@ -207,23 +210,32 @@ def painel(ator, csrf, itens, movimentacoes,
             validade, situacao
         )
 
+        acoes = f'<a href="/estoque?novo_lote_de={item.id}#cadastro">Receber novo lote</a>'
+        if item.ativo and item.quantidade == 0:
+            acoes += (
+                '<form method="post" action="/estoque">' + oculto(csrf)
+                + '<input type="hidden" name="acao" value="encerrar_lote">'
+                + f'<input type="hidden" name="item_id" value="{item.id}">'
+                + '<button class="secundario" type="submit">Encerrar lote vazio</button></form>'
+            )
         linhas.append(
             "<tr>" +
             "".join(
                 f"<td>{escape(str(valor))}</td>"
                 for valor in valores
             ) +
-            "</tr>"
+            f"<td>{acoes}</td></tr>"
         )
 
     corpo += (
         '<section class="cartao"><h2>Itens cadastrados</h2>'
+        '<p>Encerre um lote vazio quando ele sair de uso. Seu histórico continua disponível.</p>'
         '<div class="tabela"><table>'
         '<thead><tr>'
         '<th>ID</th><th>Nome</th><th>Lote</th>'
         '<th>Unidade</th><th>Quantidade</th>'
         '<th>Limite</th><th>Validade</th>'
-        '<th>Situação</th>'
+        '<th>Situação</th><th>Ações</th>'
         '</tr></thead><tbody>'
         + "".join(linhas)
         + '</tbody></table></div></section>'

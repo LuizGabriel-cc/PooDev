@@ -1,5 +1,4 @@
 from contextlib import nullcontext
-import os
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -53,11 +52,6 @@ def test_comando_servir_encerra_monitoramento(ambiente_cli):
     verificar_schema = Mock()
     ambiente_cli.setattr(entrada.psycopg, "connect", Mock(return_value=nullcontext(conexao)))
     ambiente_cli.setattr(entrada, "validar_versao_schema", verificar_schema)
-    ambiente_cli.delenv("PDF_RAIZES_CONFIAVEIS", raising=False)
-    ambiente_cli.delenv("PDF_CERTIFICADOS_INTERMEDIARIOS", raising=False)
-    ambiente_cli.setenv("PDF_LISTAS_REVOGACAO", f" lista a.crl {os.pathsep} lista b.der ")
-    criar_verificador = Mock()
-    ambiente_cli.setattr(entrada, "VerificadorAssinaturaPDF", criar_verificador)
     parada = Mock()
     servidor = Mock()
     monitoramento = Mock(return_value=parada)
@@ -68,7 +62,6 @@ def test_comando_servir_encerra_monitoramento(ambiente_cli):
     entrada.main()
 
     verificar_schema.assert_called_once_with(conexao)
-    criar_verificador.assert_called_once_with([], [], caminhos_crls=["lista a.crl", "lista b.der"])
     monitoramento.assert_called_once()
     iniciar_servidor.assert_called_once()
     servidor.serve_forever.assert_called_once()

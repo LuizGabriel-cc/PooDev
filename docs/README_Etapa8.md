@@ -1,5 +1,11 @@
 # Etapa 8 — Aplicativo instalável
 
+## Navegação após entrar
+
+Use o menu lateral para acessar as áreas do laboratório. **Reservas e chaves** reúne as páginas de agendamento e controle de chaves. Em telas estreitas, abra **Menu** para ver os atalhos.
+
+No perfil do Chefe, **Gerenciar usuários** reúne os cadastros de alunos e professores. **Configurar laboratório** leva a Manutenção, Restrições e Limites de reserva. O círculo no perfil apresenta as iniciais do nome cadastrado.
+
 ## Instalar
 
 1. Inicie o sistema pelo VS Code ou terminal, conforme o [guia principal](../README.md).
@@ -30,7 +36,7 @@ flowchart LR
     Pagina -->|"Envio de formulários"| Servidor
 ```
 
-Ao mudar o conteúdo da ajuda ou outro arquivo da lista offline, incremente a versão do cache no service worker. Feche as janelas antigas do sistema e abra o aplicativo online para atualizar o cache.
+O endereço do CSS inclui uma revisão calculada a partir de seu conteúdo. Após reiniciar o servidor com um CSS novo, o navegador online recebe essa versão mesmo que o service worker anterior ainda esteja ativo. Ao mudar a ajuda ou outro arquivo da lista offline, incremente a versão do cache no service worker. Feche as janelas do aplicativo e reabra-o online para atualizar os arquivos usados offline.
 
 ## Demonstrar o alerta de chaves
 

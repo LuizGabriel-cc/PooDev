@@ -1243,6 +1243,17 @@ class ServicoEstoque:
 
             return item
 
+    def encerrar_lote(self, token: str, item_id: int) -> None:
+        if type(item_id) is not int or item_id <= 0:
+            raise DadosInvalidos("Item inválido.")
+
+        with self._transacao() as tx:
+            chefe, laboratorio = self._exigir_chefe(tx, token)
+            tx.contexto(chefe.id, "Encerramento de lote vazio")
+            if not tx.estoque.encerrar_lote_vazio(item_id, laboratorio.id):
+                raise DadosInvalidos("Somente um lote ativo, sem saldo e deste laboratório pode ser encerrado.")
+            tx.estoque.avaliar_alertas_item(item_id)
+
     def cadastrar(
         self,
         token: str,

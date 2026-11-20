@@ -1,5 +1,4 @@
 import argparse
-import os
 from getpass import getpass
 from wsgiref.simple_server import make_server, WSGIRequestHandler
 
@@ -20,7 +19,6 @@ from .aplicacao.protocolos import ServicoProtocolos
 from .aplicacao.operacoes import ServicoOperacoes
 from .aplicacao.notificacoes import ServicoEnvioEmail, iniciar_envio_email
 from .infraestrutura.smtp import ConfiguracaoSMTP, TransportadorSMTP
-from .infraestrutura.verificador_assinatura_pdf import VerificadorAssinaturaPDF
 import logging
 from threading import Event, Thread
 
@@ -112,11 +110,7 @@ def main():
             limites = ServicoLimitesReserva(transacao, autenticacao)
             chaves = ServicoChaves(transacao, autenticacao)
             estoque = ServicoEstoque(transacao, autenticacao)
-            caminhos = [p.strip() for p in os.getenv("PDF_RAIZES_CONFIAVEIS", "").split(os.pathsep) if p.strip()]
-            intermediarias = [p.strip() for p in os.getenv("PDF_CERTIFICADOS_INTERMEDIARIOS", "").split(os.pathsep) if p.strip()]
-            listas_revogacao = [p.strip() for p in os.getenv("PDF_LISTAS_REVOGACAO", "").split(os.pathsep) if p.strip()]
-            verificador_pdf = VerificadorAssinaturaPDF(caminhos, intermediarias, caminhos_crls=listas_revogacao)
-            protocolos = ServicoProtocolos(transacao, autenticacao, verificador_pdf)
+            protocolos = ServicoProtocolos(transacao, autenticacao)
             operacoes = ServicoOperacoes(transacao, autenticacao)
             app = AplicacaoWeb(
                 autenticacao, cadastro, config, recursos=recursos, reservas=reservas,

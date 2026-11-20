@@ -9,6 +9,8 @@ import logging
 import time
 
 from . import paginas
+from .arquivos_pwa import ARQUIVOS_VERSIONADOS
+from .navegacao import rota_atual
 from . import paginas_chaves
 from . import paginas_operacoes
 from . import paginas_protocolos
@@ -19,6 +21,7 @@ from ..dominio.usuarios import Perfil, Professor, ChefeLaboratorio
 from datetime import date, datetime, timedelta, timezone
 from . import paginas_estoque
 from ..dominio.protocolos import LIMITE_PDF_BYTES
+from ..infraestrutura.previa_protocolos import contar_paginas, renderizar_previa
 
 ROTAS_OPERACOES = frozenset({"/restricoes", "/manutencao", "/ocorrencias", "/notificacoes"})
 ARQUIVOS_PUBLICOS = {
@@ -28,6 +31,7 @@ ARQUIVOS_PUBLICOS = {
     "/registrar-pwa.js": ("registrar-pwa.js", "text/javascript; charset=utf-8"),
     "/pwa/icone-192.png": ("icone-192.png", "image/png"),
     "/pwa/icone-512.png": ("icone-512.png", "image/png"),
+    "/icones-menu.png": ("icones-menu.png", "image/png"),
 }
 
 @dataclass
@@ -72,6 +76,7 @@ class AplicacaoWeb:
         self._operacoes = operacoes
 
     def __call__(self, environ, start_response):
+        contexto_rota = rota_atual.set(environ.get("PATH_INFO", "/"))
         try:
             resposta = self._rotear(environ)
         except AcessoNegado as erro:
@@ -84,6 +89,8 @@ class AplicacaoWeb:
             # Não imprimir os argumentos da exceção: podem incluir dados da conexão.
             logging.getLogger(__name__).error("Falha no atendimento HTTP: %s", type(erro).__name__)
             resposta = Resposta(paginas.layout("Não foi possível continuar", paginas.aviso("Tente novamente mais tarde.", True)), 500)
+        finally:
+            rota_atual.reset(contexto_rota)
         corpo = resposta.corpo.encode("utf-8") if isinstance(resposta.corpo, str) else resposta.corpo
         headers = [("Content-Type", "text/html; charset=utf-8"), ("Content-Length", str(len(corpo))),
                    ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"),
@@ -409,6 +416,10 @@ class AplicacaoWeb:
                         "/estoque?resultado=movimentacao"
                     )
 
+                elif acao == "encerrar_lote":
+                    self._estoque.encerrar_lote(token, self._identificador(campos.get("item_id")))
+                    return self._redirecionar("/estoque?resultado=lote_encerrado")
+
                 else:
                     raise DadosInvalidos(
                         "Operação de estoque inválida."
@@ -438,23 +449,31 @@ class AplicacaoWeb:
         pendencias = self._estoque.listar_pendencias(token)
         
 
+        dados_formulario = campos if metodo == "POST" else None
         if metodo == "GET":
-            resultado = self._ler_consulta(
-                environ
-            ).get("resultado", "")
+            consulta = self._ler_consulta(environ)
+            resultado = consulta.get("resultado", "")
 
             mensagem = {
                 "cadastro": "Item cadastrado com sucesso.",
                 "movimentacao":
-                    "Movimentação registrada com sucesso."
+                    "Movimentação registrada com sucesso.",
+                "lote_encerrado": "Lote encerrado. O histórico foi preservado.",
             }.get(resultado, "")
+            if "novo_lote_de" in consulta:
+                origem = self._estoque.consultar(token, self._identificador(consulta["novo_lote_de"]))
+                dados_formulario = {
+                    "nome": origem.nome, "unidade": origem.unidade, "lote": "",
+                    "limite_estoque_baixo": origem.limite_estoque_baixo,
+                }
+                mensagem = "Informe o novo lote, a validade do material recebido e a quantidade inicial."
 
         return Resposta(
             paginas_estoque.painel(
                 usuario, csrf, itens, movimentacoes,
                 mensagem=mensagem,
                 erro=erro_formulario,
-                dados=campos if metodo == "POST" else None,
+                dados=dados_formulario,
                 alertas=alertas,
                 pendencias=pendencias
             ),
@@ -464,7 +483,7 @@ class AplicacaoWeb:
     def _rotear_protocolos(self, rota, metodo, environ, campos, token, usuario, csrf):
         if self._protocolos is None:
             raise FalhaPersistencia("Serviço de protocolos indisponível.")
-        if rota in {"/protocolos/download", "/protocolos/detalhe"} and metodo != "GET":
+        if rota in {"/protocolos/download", "/protocolos/detalhe", "/protocolos/previa"} and metodo != "GET":
             return Resposta("Método não permitido.", 405, [("Allow", "GET")])
         if rota in {"/protocolos/assinar", "/protocolos/validar", "/protocolos/vincular"} and metodo != "POST":
             return Resposta("Método não permitido.", 405, [("Allow", "POST")])
@@ -473,14 +492,15 @@ class AplicacaoWeb:
             if metodo != "GET":
                 return Resposta("Método não permitido.", 405, [("Allow", "GET")])
             avisos = {
-                "novo": "PDF assinado recebido e assinatura verificada.",
+                "novo": "PDF recebido. O autor pode assiná-lo nos detalhes.",
                 "assinado": "Assinatura registrada.",
                 "validado": "Protocolo validado.",
                 "vinculado": "Equipamento vinculado ao protocolo.",
             }
+            situacao = dados.get("situacao", "validados")
             return Resposta(paginas_protocolos.lista(
-                usuario, csrf, self._protocolos.listar(token),
-                avisos.get(dados.get("resultado"), "")
+                usuario, csrf, self._protocolos.listar(token, situacao=situacao),
+                avisos.get(dados.get("resultado"), ""), situacao=situacao,
             ))
         if rota == "/protocolos/novo":
             if metodo == "GET":
@@ -502,6 +522,11 @@ class AplicacaoWeb:
         protocolo_id = self._identificador(
             dados.get("id") if metodo == "GET" else dados.get("protocolo_id")
         )
+        if rota == "/protocolos/previa":
+            pagina = self._identificador(dados.get("pagina"))
+            _, original = self._protocolos.baixar(token, protocolo_id)
+            imagem = renderizar_previa(original, pagina)
+            return Resposta(imagem, headers=[("Content-Type", "image/png")])
         if rota == "/protocolos/download":
             if metodo != "GET":
                 return Resposta("Método não permitido.", 405, [("Allow", "GET")])
@@ -517,13 +542,26 @@ class AplicacaoWeb:
                 return Resposta("Método não permitido.", 405, [("Allow", "GET")])
             protocolo, equipamentos = self._protocolos.consultar(token, protocolo_id)
             verificacao = self._protocolos.verificar_assinatura(token, protocolo_id)
+            total_paginas = pagina_previa = None
+            erro_previa = ""
+            if "pagina" in dados:
+                pagina_previa = self._identificador(dados["pagina"])
+                _, original = self._protocolos.baixar(token, protocolo_id)
+                try:
+                    total_paginas = contar_paginas(original)
+                    if pagina_previa > total_paginas:
+                        raise DadosInvalidos("Esta página não existe no documento.")
+                except DadosInvalidos as erro:
+                    erro_previa = str(erro)
+                    pagina_previa = None
             return Resposta(paginas_protocolos.detalhe(
-                usuario, csrf, protocolo, equipamentos, verificacao=verificacao
+                usuario, csrf, protocolo, equipamentos, verificacao=verificacao,
+                pagina_previa=pagina_previa, total_paginas=total_paginas, erro_previa=erro_previa,
             ))
         if metodo != "POST":
             return Resposta("Método não permitido.", 405, [("Allow", "POST")])
         if rota == "/protocolos/assinar":
-            raise DadosInvalidos("Assine o PDF no gov.br e envie o arquivo assinado.")
+            self._protocolos.assinar(token, protocolo_id)
         elif rota == "/protocolos/validar":
             self._protocolos.validar(
                 token, protocolo_id, identidade_conferida=campos.get("identidade_conferida") == "sim"
@@ -620,10 +658,10 @@ class AplicacaoWeb:
         arquivo = ARQUIVOS_PUBLICOS.get(rota)
         if arquivo and metodo == "GET":
             nome, tipo = arquivo
-            return Resposta(
-                (Path(__file__).parent / nome).read_bytes(),
-                headers=[("Content-Type", tipo)],
-            )
+            conteudo = ARQUIVOS_VERSIONADOS.get(rota)
+            if conteudo is None:
+                conteudo = (Path(__file__).parent / nome).read_bytes()
+            return Resposta(conteudo, headers=[("Content-Type", tipo)])
         if metodo == "GET" and rota == "/ajuda":
             return Resposta(paginas.ajuda())
         if metodo == "GET" and rota == "/offline":
@@ -661,6 +699,7 @@ class AplicacaoWeb:
         if rota not in {
             "/",
             "/usuarios",
+            "/configuracoes",
             "/usuarios/remover",
             "/cadastros/aluno",
             "/cadastros/professor",
@@ -689,6 +728,7 @@ class AplicacaoWeb:
             "/protocolos/validar",
             "/protocolos/vincular",
             "/protocolos/download",
+            "/protocolos/previa",
             "/sair",
         } and rota not in ROTAS_OPERACOES:
             return Resposta(
@@ -729,6 +769,12 @@ class AplicacaoWeb:
             return self._redirecionar("/entrar", [self._cookie("lab_sessao", "", True)])
         if rota == "/" and metodo == "GET":
             return Resposta(paginas.perfil(usuario, csrf))
+        if rota == "/configuracoes":
+            if not isinstance(usuario, ChefeLaboratorio):
+                raise AcessoNegado("Somente o Chefe pode configurar o laboratório.")
+            if metodo != "GET":
+                return Resposta("Método não permitido.", 405, [("Allow", "GET")])
+            return Resposta(paginas.configuracoes(usuario, csrf))
         if rota == "/reservas" and metodo == "GET":
 
             if self._reservas is None:

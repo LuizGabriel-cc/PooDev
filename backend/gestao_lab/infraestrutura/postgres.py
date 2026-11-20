@@ -880,7 +880,24 @@ class EstoquePostgres(RepositorioEstoque):
             for linha in resultado.fetchall()
         ]
 
+    def encerrar_lote_vazio(self, item_id, laboratorio_id):
+        resultado = self._conexao.execute("""
+            UPDATE gestao_lab.item_estoque
+            SET ativo = false
+            WHERE id = %s AND laboratorio_id = %s AND ativo AND quantidade = 0
+        """, (item_id, laboratorio_id))
+        return resultado.rowcount == 1
+
     def movimentar(self, chefe_id, item_id, variacao, motivo, finalidade="USO"):
+        if variacao > 0:
+            lote = self._conexao.execute("""
+                SELECT validade < gestao_lab.data_local_estoque() AS vencido
+                FROM gestao_lab.item_estoque WHERE id = %s AND ativo FOR UPDATE
+            """, (item_id,)).fetchone()
+            if lote and lote["vencido"]:
+                raise DadosInvalidos(
+                    "Este lote está vencido. Use Receber novo lote e informe a validade da reposição."
+                )
         resultado = self._conexao.execute("""
             SELECT gestao_lab.movimentar_estoque(
                 %s, %s, %s, %s, %s

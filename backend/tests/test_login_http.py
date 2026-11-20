@@ -2,6 +2,7 @@ import http.cookiejar
 import json
 import re
 import struct
+from hashlib import sha256
 import threading
 from dataclasses import replace
 from types import SimpleNamespace
@@ -139,6 +140,18 @@ def test_arquivos_pwa_sao_publicos_e_preservam_formulario_de_login(sistema_http)
     assert perfil.status == 200
     assert perfil.headers.get("Cache-Control") == "no-store"
     assert "Chefe de teste" in perfil.body
+
+    url_estilo, revisao = re.search(r'rel="stylesheet" href="(/estilo\.css\?v=([0-9a-f]{16}))"', perfil.body).groups()
+    estilo = cliente.requisitar(url_estilo)
+    assert estilo.status == 200
+    assert estilo.headers.get_content_type() == "text/css"
+    assert ".com-menu-lateral" in estilo.body
+    assert sha256(estilo.body.encode("utf-8")).hexdigest()[:16] == revisao
+    for rota in ("/ajuda", "/offline"):
+        assert f'href="{url_estilo}"' in cliente.requisitar(rota).body
+    worker = cliente.requisitar("/service-worker.js").body
+    assert f'const URL_ESTILO = "{url_estilo}";' in worker
+    assert revisao in worker.partition("const CACHE_PUBLICO = ")[2].splitlines()[0]
 
 
 def test_login_antigo_apos_reinicio_exibe_novo_formulario(sistema_http):

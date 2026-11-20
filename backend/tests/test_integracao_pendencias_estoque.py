@@ -90,6 +90,19 @@ def test_vencido_fica_pendente_ate_descarte_total(sistema):
     cliente.cookies["lab_sessao"] = sistema.token
     formulario = cliente.requisitar("/estoque")
     assert formulario.status == 200
+    receber = cliente.requisitar(f"/estoque?novo_lote_de={item.id}")
+    assert receber.status == 200
+    assert f'value="{item.nome}"' in receber.body
+    assert f'value="{item.validade}"' not in receber.body
+    assert "Informe o novo lote" in receber.body
+    entrada = {"acao": "movimentar", "item_id": item.id, "variacao": "5",
+               "motivo": "Reposição", "csrf": cliente.csrf(formulario)}
+    rejeitada = cliente.requisitar("/estoque", entrada)
+    assert rejeitada.status == 400
+    assert "Este lote está vencido" in rejeitada.body
+    assert app.consultar(sistema.token, item.id).quantidade == 4
+    encerrar = {"acao": "encerrar_lote", "item_id": item.id, "csrf": cliente.csrf(formulario)}
+    assert cliente.requisitar("/estoque", encerrar).status == 400
     motivo = "x" * 500
     campos = {"acao": "movimentar", "item_id": item.id, "variacao": "-4",
               "motivo": motivo, "finalidade": "DESCARTE"}
@@ -111,8 +124,18 @@ def test_vencido_fica_pendente_ate_descarte_total(sistema):
     """, (sistema.chefe.id, str(item.id)))
     assert len(aviso_validade) == 1 and aviso_validade[0]["resolvida_em"] is not None
 
-    with sistema.transacao() as tx:
-        tx._conexao.execute("UPDATE gestao_lab.item_estoque SET ativo = false WHERE id = %s", (item.id,))
+    novo_lote = {"acao": "cadastrar", "nome": item.nome, "unidade": item.unidade,
+                 "lote": "REPOSICAO-002", "quantidade": "5", "limite_estoque_baixo": "1",
+                 "validade": (date.today() + timedelta(days=120)).isoformat(), "csrf": cliente.csrf(painel)}
+    assert cliente.requisitar("/estoque", novo_lote).status == 303
+    assert cliente.requisitar("/estoque", {"acao": "encerrar_lote", "item_id": item.id}).status == 403
+    assert cliente.requisitar("/estoque", encerrar).status == 303
+    assert not app.consultar(sistema.token, item.id).ativo
+    assert not app.listar_pendencias(sistema.token)
+    assert not app.listar_alertas(sistema.token)
+    assert app.listar_movimentacoes(sistema.token, item_id=item.id)[0] == movimento
+    reposicao = next(it for it in app.listar(sistema.token) if it.lote == "REPOSICAO-002")
+    assert reposicao.quantidade == 5 and reposicao.validade > item.validade
     with pytest.raises(DadosInvalidos, match="inativo"):
         app.movimentar(sistema.token, item_id=item.id, variacao="1", motivo="Reposição")
 

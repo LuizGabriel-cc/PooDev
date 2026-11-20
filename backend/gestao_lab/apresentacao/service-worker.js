@@ -1,10 +1,12 @@
 const PREFIXO_CACHE = "poodev-publico-";
-const CACHE_PUBLICO = PREFIXO_CACHE + "2";
+const CACHE_PUBLICO = PREFIXO_CACHE + "6-__REVISAO_ESTILO__";
+const URL_ESTILO = "__URL_ESTILO__";
 const PAGINA_OFFLINE = "/offline";
 const ARQUIVOS_OFFLINE = new Set([
     PAGINA_OFFLINE,
     "/ajuda",
-    "/estilo.css",
+    URL_ESTILO,
+    "/icones-menu.png",
     "/manifest.webmanifest",
     "/registrar-pwa.js",
     "/pwa/icone-192.png",
@@ -38,10 +40,11 @@ self.addEventListener("fetch", (evento) => {
     const url = new URL(pedido.url);
     if (pedido.method !== "GET" || url.origin !== self.location.origin) return;
 
-    if (!url.search && ARQUIVOS_OFFLINE.has(url.pathname)) {
+    const endereco = url.pathname + url.search;
+    if (ARQUIVOS_OFFLINE.has(endereco)) {
         evento.respondWith(
             caches.open(CACHE_PUBLICO)
-                .then((cache) => cache.match(url.pathname))
+                .then((cache) => cache.match(endereco))
                 .then((resposta) => resposta || fetch(pedido))
         );
     } else if (pedido.mode === "navigate") {

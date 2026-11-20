@@ -12,18 +12,31 @@ class ProtocolosPostgres(RepositorioProtocolos):
         FROM gestao_lab.protocolo p
         JOIN gestao_lab.usuario u ON u.id = p.autor_id
     """
+    _FILTROS = {
+        None: "",
+        "validados": "AND p.estado = 'VALIDADO' AND p.pdf_politica_verificacao IS NOT NULL",
+        "revisao": "AND p.estado = 'NAO_VALIDADO'",
+    }
 
     def __init__(self, conexao):
         self._conexao = conexao
+
+    def bloquear_laboratorio(self, laboratorio_id):
+        self._conexao.execute(
+            "SELECT 1 FROM gestao_lab.laboratorio WHERE id = %s FOR UPDATE",
+            (laboratorio_id,),
+        )
 
     @staticmethod
     def _modelo(linha, vinculos=()):
         return Protocolo(**linha, vinculos=tuple(vinculos))
 
-    def listar(self, laboratorio_id):
+    def listar(self, laboratorio_id, *, situacao=None):
+        filtro = self._FILTROS[situacao]
         linhas = self._conexao.execute(
-            self._BASE + """
+            self._BASE + f"""
             WHERE p.laboratorio_id = %s
+            {filtro}
             ORDER BY p.criado_em DESC, p.id DESC
             LIMIT 200
             """, (laboratorio_id,)
@@ -55,17 +68,40 @@ class ProtocolosPostgres(RepositorioProtocolos):
         """, (laboratorio_id, titulo, autor_id, nome_arquivo, pdf_original))
         return resultado.fetchone()["id"]
 
-    def assinar(self, autor_id, protocolo_id):
+    def chave_autor(self, usuario_id, laboratorio_id):
+        linha = self._conexao.execute("""
+            SELECT modulo, expoente_publico, expoente_privado
+            FROM gestao_lab.chave_assinatura_usuario
+            WHERE usuario_id = %s AND laboratorio_id = %s
+        """, (usuario_id, laboratorio_id)).fetchone()
+        if linha is None:
+            return None
+        return tuple(int(linha[nome]) for nome in ("modulo", "expoente_publico", "expoente_privado"))
+
+    def salvar_chave_autor(self, usuario_id, laboratorio_id, modulo, expoente_publico, expoente_privado):
+        self._conexao.execute("""
+            INSERT INTO gestao_lab.chave_assinatura_usuario
+                (usuario_id, laboratorio_id, modulo, expoente_publico, expoente_privado)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (usuario_id, laboratorio_id, str(modulo), str(expoente_publico), str(expoente_privado)))
+
+    def registrar_assinatura_rsa(self, autor_id, protocolo_id, assinatura, resumo):
         self._conexao.execute(
-            "SELECT gestao_lab.assinar_protocolo(%s, %s)",
-            (autor_id, protocolo_id)
+            "SELECT gestao_lab.registrar_assinatura_rsa(%s, %s, %s, %s)",
+            (autor_id, protocolo_id, assinatura, resumo),
         )
 
-    def registrar_assinatura_pdf_verificada(self, autor_id, protocolo_id, politica):
-        self._conexao.execute(
-            "SELECT gestao_lab.registrar_assinatura_pdf_verificada(%s, %s, %s)",
-            (autor_id, protocolo_id, politica)
-        )
+    def evidencia_assinatura(self, protocolo_id, laboratorio_id):
+        linha = self._conexao.execute("""
+            SELECT assinatura_rsa AS assinatura, rsa_resumo AS resumo,
+                   rsa_modulo AS modulo, rsa_expoente_publico AS expoente_publico
+            FROM gestao_lab.protocolo WHERE id = %s AND laboratorio_id = %s
+              AND pdf_politica_verificacao = 'rsa-sha256-v1'
+        """, (protocolo_id, laboratorio_id)).fetchone()
+        if linha is None or linha["assinatura"] is None:
+            return None
+        return {"assinatura": bytes(linha["assinatura"]), "resumo": bytes(linha["resumo"]),
+                "modulo": int(linha["modulo"]), "expoente_publico": int(linha["expoente_publico"])}
 
     def validar(self, chefe_id, protocolo_id):
         self._conexao.execute(

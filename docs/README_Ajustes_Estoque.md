@@ -20,7 +20,11 @@ A tabela `envio_email` já registra solicitações de envio criadas junto às no
 
 ## Retirada de material vencido
 
-O PostgreSQL verifica a validade no momento de atualizar o saldo e usa a data de São Paulo, a mesma referência do painel. Um item vencido admite saída com finalidade *Descarte*. O histórico das novas saídas grava a finalidade separadamente do motivo, que pode ter até 500 caracteres. Registros anteriores conservam seus motivos originais. Entradas continuam disponíveis para ajustes e reposições de itens ativos.
+O PostgreSQL confere a data de São Paulo. Lotes vencidos admitem descarte. O histórico registra a finalidade da saída separadamente do motivo, que pode ter até 500 caracteres.
+
+Uma entrada na tela de movimentações é para o mesmo lote, com a mesma validade. O sistema bloqueia entradas em lotes vencidos. Para uma reposição de outro lote ou com outra validade, use **Receber novo lote** e informe os dados do material recebido. O formulário copia o nome, a unidade e o limite do item de origem.
+
+Ao retirar toda a quantidade vencida, o aviso de validade é resolvido. O saldo zero continua como pendência de estoque baixo enquanto o lote estiver ativo. Use **Encerrar lote vazio** quando ele sair de uso. Essa operação resolve os avisos daquele lote e mantém o histórico de movimentações e notificações. Os limites continuam sendo avaliados por lote.
 
 ## Organização do código
 

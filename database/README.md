@@ -11,7 +11,7 @@ Use PostgreSQL 16 ou superior e uma conta com permissão para criar banco, schem
 1. Abra o Query Tool do banco `postgres` e execute [00_criar_banco.sql](00_criar_banco.sql), com autocommit habilitado.
 2. Atualize a lista de bancos e abra o Query Tool em `gestao_laboratorio`.
 3. Abra e execute [BancoLaboratorioPostgreSQL.sql](BancoLaboratorioPostgreSQL.sql) para instalar o schema na versão 1.
-4. Aplique as [migrações](migrations/README.md) em ordem até a versão 4.
+4. Aplique as [migrações](migrations/README.md) em ordem até a versão 5.
 5. Execute [08_verificar_instalacao.sql](08_verificar_instalacao.sql) para conferir versões e recursos do schema.
 6. Se quiser trabalhar com dados fictícios, execute [03_dados_exemplo.sql](03_dados_exemplo.sql) uma vez.
 

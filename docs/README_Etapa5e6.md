@@ -68,13 +68,14 @@ A checagem `%PDF-` é uma validação inicial do tipo de arquivo, não uma anál
 | Método | Responsabilidade |
 | --- | --- |
 | `listar()` e `consultar()` | Mostram protocolos do laboratório do usuário autenticado. |
-| `cadastrar()` | Confere a assinatura do PDF e a correspondência nominal com o autor da sessão antes de gravar o arquivo. |
+| `cadastrar()` | Registra o PDF para assinatura pelo autor da sessão. |
+| `assinar()` | Usa a chave RSA do autor autenticado para assinar o resumo SHA-256 do PDF. |
 | `verificar_assinatura()` | Consulta o resultado técnico da verificação do PDF. |
 | `validar()` | Permite ao Chefe aprovar após reconferir a assinatura e confirmar a identidade do signatário. |
 | `vincular()` | Associa um protocolo com evidência digital e aprovação do Chefe a equipamento do mesmo laboratório. |
 | `baixar()` | Recupera o nome e os bytes originais do PDF para usuário do laboratório. |
 
-O autor assina no gov.br, envia o PDF e aguarda a validação do Chefe. Um protocolo aprovado pode ser vinculado a vários equipamentos. A configuração da cadeia, a verificação offline e o tratamento dos registros anteriores estão no [guia de assinaturas gov.br](README_Etapa6_Validacao_Assinaturas.md).
+O autor envia o PDF, abre os detalhes e assina pelo próprio sistema. A assinatura usa RSA e SHA-256 implementados com código próprio. O Chefe confere o conteúdo e a autoria, valida o protocolo e pode vinculá-lo a vários equipamentos. Consulte o [guia de assinatura RSA](README_Etapa6_Validacao_Assinaturas.md).
 
 ### Banco e interface
 
@@ -82,9 +83,11 @@ O autor assina no gov.br, envia o PDF e aguarda a validação do Chefe. Um proto
 
 O PDF original fica na coluna `pdf_original` (`bytea`) da tabela `protocolo`. Essa decisão mantém arquivo e metadados sob a mesma transação e evita depender de caminhos locais para baixar documentos. O método `arquivo()` devolve os bytes sem conversão.
 
-As funções SQL `gestao_lab.registrar_assinatura_pdf_verificada` e `gestao_lab.validar_protocolo` aplicam as mudanças de estado. Restrições e gatilhos preservam o PDF e a evidência após a conferência. A tabela `protocolo_equipamento` mantém as associações.
+As funções SQL `gestao_lab.registrar_assinatura_rsa` e `gestao_lab.validar_protocolo` aplicam as mudanças de estado. Restrições e gatilhos preservam o PDF e a evidência após a conferência. A tabela `protocolo_equipamento` mantém as associações.
 
-`apresentacao/paginas_protocolos.py` monta as páginas, e `apresentacao/web.py` atende `/protocolos`, `/protocolos/novo`, `/protocolos/detalhe`, `/protocolos/validar`, `/protocolos/vincular` e `/protocolos/download`. O upload usa `multipart/form-data`, com controle de tamanho, sessão e CSRF. O download utiliza `Content-Type: application/pdf`.
+`apresentacao/paginas_protocolos.py` monta a lista por situação e os detalhes com os equipamentos vinculados. As duas seções são **Validados** e **Aguardando validação**. A segunda inclui os PDFs que ainda aguardam a assinatura do autor. O filtro é aplicado no banco antes do limite de 200 resultados. O envio usa `multipart/form-data`, com controle de tamanho, sessão e CSRF.
+
+A ação **Visualizar PDF** mostra uma página por vez nos detalhes. A rota autenticada `/protocolos/previa` devolve uma imagem PNG, gerada em memória a partir do mesmo PDF original. A prévia usa as dependências opcionais listadas em `backend/requirements-assinatura.txt`. **Baixar PDF original** devolve os bytes preservados. A assinatura RSA fica associada ao documento no banco e é conferida na página de detalhes.
 
 ## Por que essas escolhas técnicas?
 
