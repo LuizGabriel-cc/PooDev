@@ -1,5 +1,5 @@
 
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from html import escape
 
 from .paginas import (
@@ -9,17 +9,58 @@ from .paginas import (
 
 def painel(ator, csrf, itens, movimentacoes,
            mensagem="", erro=False, dados=None,
-           alertas=()):
+           alertas=(), pendencias=None):
     dados = dados or {}
     fuso = timezone(timedelta(hours=-3))
     corpo = aviso(mensagem, erro)
 
 
     
-    # Alertas atuais do laboratório.
+    # A mesma classificação do banco alimenta as duas tabelas.
+    situacoes = {}
+    corpo += (
+        '<section class="cartao" id="pendencias">'
+        '<h2>Pendências do estoque</h2>'
+    )
+    if pendencias:
+        corpo += (
+            '<div class="tabela"><table><thead><tr>'
+            '<th>Item</th><th>Lote</th><th>Quantidade</th>'
+            '<th>Validade</th><th>Pendências</th>'
+            '</tr></thead><tbody>'
+        )
+        for pendencia in pendencias:
+            estados = []
+            if pendencia["vencido"]:
+                estados.append("Vencido")
+            elif pendencia["validade_proxima"]:
+                estados.append("Validade próxima")
+            if pendencia["estoque_baixo"]:
+                estados.append("Estoque baixo")
+            situacao = ", ".join(estados)
+            situacoes[pendencia["item_id"]] = situacao
+            validade = (
+                pendencia["validade"].strftime("%d/%m/%Y")
+                if pendencia["validade"] else "—"
+            )
+            valores = (
+                pendencia["nome"], pendencia["lote"],
+                f'{pendencia["quantidade"]} {pendencia["unidade"]}',
+                validade, situacao
+            )
+            corpo += "<tr>" + "".join(
+                f"<td>{escape(str(valor))}</td>"
+                for valor in valores
+            ) + "</tr>"
+        corpo += '</tbody></table></div>'
+    else:
+        corpo += '<p>Nenhuma pendência no momento.</p>'
+    corpo += '</section>'
+
+    # Alertas ainda abertos: avisos históricos resolvidos não são exibidos.
     corpo += (
         '<section class="cartao" id="alertas">'
-        '<h2>🔔 Alertas de estoque</h2>'
+        '<h2>🔔 Alertas de estoque (avisos ativos)</h2>'
     )
 
     if alertas:
@@ -81,8 +122,8 @@ def painel(ator, csrf, itens, movimentacoes,
         )
 
     corpo += (
-        '<section class="cartao">'
-        '<h2>Cadastrar item</h2>'
+        '<section class="cartao" id="cadastro">'
+        '<h2>Cadastrar item ou novo lote</h2>'
         '<form method="post" action="/estoque">'
         + oculto(csrf)
         + '<input type="hidden" name="acao" value="cadastrar">'
@@ -97,13 +138,16 @@ def painel(ator, csrf, itens, movimentacoes,
     corpo += (
         '<section class="cartao">'
         '<h2>Entrada e saída de estoque</h2>'
-        '<p>Use valor positivo para entrada '
-        'e negativo para saída.</p>'
+        '<p>Use valor positivo para entrada no mesmo lote e negativo para saída. '
+        'Para material de outro lote ou com outra validade, use <strong>Receber novo lote</strong> '
+        'na tabela de itens cadastrados.</p>'
     )
 
     if ativos:
+        hoje = datetime.now(fuso).date()
         opcoes = [
-            (item.id, f"{item.nome} — lote {item.lote}")
+            (item.id, f"{item.nome} — lote {item.lote}"
+             + (" (vencido: somente descarte)" if item.validade and item.validade < hoje else ""))
             for item in ativos
         ]
 
@@ -115,6 +159,7 @@ def painel(ator, csrf, itens, movimentacoes,
         variacao = escape(
             str(dados.get("variacao", "")), quote=True
         )
+        descarte = " selected" if dados.get("finalidade") == "DESCARTE" else ""
 
         corpo += (
             '<form method="post" action="/estoque">'
@@ -123,6 +168,10 @@ def painel(ator, csrf, itens, movimentacoes,
             'value="movimentar">'
             + '<div class="campos">'
             + selecao
+            + '<label>Finalidade da saída<select name="finalidade">'
+              '<option value="USO">Uso</option>'
+              f'<option value="DESCARTE"{descarte}>Descarte</option>'
+              '</select></label>'
             + '<label>Variação (+ entrada / - saída)'
             f'<input type="number" name="variacao" '
             f'step="0.0001" required value="{variacao}">'
@@ -144,13 +193,11 @@ def painel(ator, csrf, itens, movimentacoes,
     linhas = []
 
     for item in itens:
-        situacao = (
-            "Estoque baixo" if item.estoque_baixo()
-            else "Normal"
-        )
-
+        situacao = situacoes.get(item.id, "Normal")
         if not item.ativo:
-            situacao = "Inativo"
+            situacao = "Encerrado"
+        elif pendencias is None and item.estoque_baixo():
+            situacao = "Estoque baixo"
 
         validade = (
             item.validade.strftime("%d/%m/%Y")
@@ -163,23 +210,32 @@ def painel(ator, csrf, itens, movimentacoes,
             validade, situacao
         )
 
+        acoes = f'<a href="/estoque?novo_lote_de={item.id}#cadastro">Receber novo lote</a>'
+        if item.ativo and item.quantidade == 0:
+            acoes += (
+                '<form method="post" action="/estoque">' + oculto(csrf)
+                + '<input type="hidden" name="acao" value="encerrar_lote">'
+                + f'<input type="hidden" name="item_id" value="{item.id}">'
+                + '<button class="secundario" type="submit">Encerrar lote vazio</button></form>'
+            )
         linhas.append(
             "<tr>" +
             "".join(
                 f"<td>{escape(str(valor))}</td>"
                 for valor in valores
             ) +
-            "</tr>"
+            f"<td>{acoes}</td></tr>"
         )
 
     corpo += (
         '<section class="cartao"><h2>Itens cadastrados</h2>'
+        '<p>Encerre um lote vazio quando ele sair de uso. Seu histórico continua disponível.</p>'
         '<div class="tabela"><table>'
         '<thead><tr>'
         '<th>ID</th><th>Nome</th><th>Lote</th>'
         '<th>Unidade</th><th>Quantidade</th>'
         '<th>Limite</th><th>Validade</th>'
-        '<th>Situação</th>'
+        '<th>Situação</th><th>Ações</th>'
         '</tr></thead><tbody>'
         + "".join(linhas)
         + '</tbody></table></div></section>'
@@ -190,12 +246,14 @@ def painel(ator, csrf, itens, movimentacoes,
 
     for movimento in movimentacoes:
         data = movimento.criado_em.astimezone(fuso)
+        finalidade = {"USO": "Uso", "DESCARTE": "Descarte"}.get(movimento.finalidade, "—")
         valores = (
             data.strftime("%d/%m/%Y %H:%M"),
             movimento.item_id,
             movimento.variacao,
             movimento.quantidade_anterior,
             movimento.quantidade_posterior,
+            finalidade,
             movimento.motivo
         )
 
@@ -214,7 +272,7 @@ def painel(ator, csrf, itens, movimentacoes,
         '<div class="tabela"><table>'
         '<thead><tr>'
         '<th>Data</th><th>Item</th><th>Variação</th>'
-        '<th>Anterior</th><th>Posterior</th><th>Motivo</th>'
+        '<th>Anterior</th><th>Posterior</th><th>Finalidade da saída</th><th>Motivo</th>'
         '</tr></thead><tbody>'
         + "".join(linhas)
         + '</tbody></table></div></section>'

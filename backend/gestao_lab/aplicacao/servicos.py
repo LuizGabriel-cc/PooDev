@@ -41,7 +41,8 @@ class ServicoAutenticacao:
 
     def entrar(self, email: str, senha: str) -> str:
         with self._transacao() as tx:
-            usuario = tx.usuarios.buscar_por_email(email.strip().lower())
+            # A redefinição de senha revoga as sessões sob o mesmo bloqueio.
+            usuario = tx.usuarios.buscar_por_email(email.strip().lower(), bloquear=True)
             correto = self._senhas.verificar(senha, usuario.senha_hash if usuario else self._hash_ficticio)
             if not correto or usuario is None or not usuario.ativo or not tx.laboratorios.esta_ativo(usuario.laboratorio_id):
                 raise CredenciaisInvalidas("E-mail ou senha inválidos.")
@@ -129,7 +130,7 @@ class ServicoCadastro:
                 tx, token, para_remocao=True
             )
 
-            alvo = tx.usuarios.buscar_por_id(usuario_id)
+            alvo = tx.usuarios.buscar_por_id(usuario_id, bloquear=True)
 
             if alvo is None or alvo.laboratorio_id != ator.laboratorio_id:
                 raise DadosInvalidos(
@@ -165,7 +166,9 @@ class ServicoCadastro:
             base = dict(nome=dados.nome, email=dados.email, laboratorio_id=ator.laboratorio_id, senha_hash="")
             if perfil == Perfil.ALUNO:
                 usuario = Aluno(**base, matricula=dados.matricula, tipo=dados.tipo, orientador_id=dados.orientador_id)
-                usuario.validar_orientador(tx.usuarios.buscar_por_id(usuario.orientador_id))
+                # O orientador deve permanecer ativo até a gravação do aluno.
+                orientador = tx.usuarios.buscar_por_id(usuario.orientador_id, bloquear=True)
+                usuario.validar_orientador(orientador)
             elif perfil == Perfil.PROFESSOR:
                 usuario = Professor(**base, programa_pos=dados.programa_pos, ramal=dados.ramal)
             else:
@@ -933,7 +936,7 @@ class ServicoConfiguracaoInicial:
         email = normalizar_email(email)
         senha_hash = self._senhas.gerar_hash(senha)
         with self._transacao() as tx:
-            usuario = tx.usuarios.buscar_por_email(email)
+            usuario = tx.usuarios.buscar_por_email(email, bloquear=True)
             if usuario is None:
                 raise DadosInvalidos("Usuário não encontrado.")
             tx.contexto(None, "Redefinição de senha pelo operador local")
@@ -1240,6 +1243,17 @@ class ServicoEstoque:
 
             return item
 
+    def encerrar_lote(self, token: str, item_id: int) -> None:
+        if type(item_id) is not int or item_id <= 0:
+            raise DadosInvalidos("Item inválido.")
+
+        with self._transacao() as tx:
+            chefe, laboratorio = self._exigir_chefe(tx, token)
+            tx.contexto(chefe.id, "Encerramento de lote vazio")
+            if not tx.estoque.encerrar_lote_vazio(item_id, laboratorio.id):
+                raise DadosInvalidos("Somente um lote ativo, sem saldo e deste laboratório pode ser encerrado.")
+            tx.estoque.avaliar_alertas_item(item_id)
+
     def cadastrar(
         self,
         token: str,
@@ -1280,7 +1294,7 @@ class ServicoEstoque:
             )
 
             # Verifica automaticamente estoque e validade.
-            tx.estoque.avaliar_alertas(laboratorio.id)
+            tx.estoque.avaliar_alertas_item(salvo.id)
 
             return salvo
 
@@ -1291,7 +1305,8 @@ class ServicoEstoque:
         *,
         item_id: int,
         variacao: Decimal | int | str,
-        motivo: str
+        motivo: str,
+        finalidade: str = "USO"
     ) -> Decimal:
 
         if type(item_id) is not int or item_id <= 0:
@@ -1317,6 +1332,11 @@ class ServicoEstoque:
             motivo, "Motivo", 500
         )
 
+        if finalidade not in ("USO", "DESCARTE"):
+            raise DadosInvalidos("Finalidade da movimentação inválida.")
+        if variacao > 0 and finalidade == "DESCARTE":
+            raise DadosInvalidos("Descarte exige uma saída do estoque.")
+
         with self._transacao() as tx:
             chefe, laboratorio = self._exigir_chefe(
                 tx, token
@@ -1326,31 +1346,21 @@ class ServicoEstoque:
                 item_id, laboratorio.id
             )
 
-            if item is None or not item.ativo:
+            if item is None:
                 raise DadosInvalidos(
                     "Item inexistente ou inativo."
                 )
 
-            if item.quantidade + variacao < 0:
-                raise DadosInvalidos(
-                    "Estoque insuficiente para esta saída."
-                )
-
-            tx.contexto(
-                chefe.id,
-                motivo
-            )
-
-            
             saldo = tx.estoque.movimentar(
                 chefe.id,
                 item.id,
                 variacao,
-                motivo
+                motivo,
+                finalidade
             )
 
             # Reavalia os alertas após a movimentação.
-            tx.estoque.avaliar_alertas(laboratorio.id)
+            tx.estoque.avaliar_alertas_item(item.id)
 
             return saldo
 
@@ -1390,6 +1400,11 @@ class ServicoEstoque:
 
 
     
+    def listar_pendencias(self, token: str) -> list[dict]:
+        with self._transacao() as tx:
+            _, laboratorio = self._exigir_chefe(tx, token)
+            return tx.estoque.listar_pendencias(laboratorio.id)
+
     def listar_alertas(self, token: str) -> list[dict]:
 
         with self._transacao() as tx:

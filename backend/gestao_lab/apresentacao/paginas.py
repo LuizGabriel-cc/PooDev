@@ -1,6 +1,8 @@
 from html import escape
 from datetime import datetime, timedelta, timezone
 from ..dominio.usuarios import Aluno, ChefeLaboratorio, Perfil, Professor, TipoAluno
+from . import navegacao
+from .arquivos_pwa import URL_ESTILO
 
 ROTULOS = {Perfil.ALUNO: "Aluno", Perfil.PROFESSOR: "Professor", Perfil.CHEFE: "Chefe de Laboratório"}
 CATEGORIAS = {TipoAluno.GRADUACAO: "Graduação", TipoAluno.MESTRADO: "Mestrado",
@@ -11,33 +13,98 @@ def oculto(csrf):
     return f'<input type="hidden" name="csrf" value="{escape(csrf, quote=True)}">'
 
 
-def layout(titulo, conteudo, usuario=None, csrf=""):
-    nav = ''
+def layout(titulo, conteudo, usuario=None, csrf="", *, classe_pagina=""):
+    principal = f'<main id="conteudo" tabindex="-1"><h1>{escape(titulo)}</h1>{conteudo}</main>'
     if usuario:
-        links = (
-            '<a href="/">Meu perfil</a>'
-            '<a href="/reservas/nova">Reservar</a>'
-        )
-
-        links += '<a href="/reservas">Reservas</a>'
-        links += '<a href="/historico">Histórico</a>'
-        links += '<a href="/chaves">Chaves</a><a href="/recursos">Recursos</a>'
-
-        if isinstance(usuario, ChefeLaboratorio):
-            links += (
-                '<a href="/usuarios">Usuários</a>'
-                '<a href="/cadastros/aluno">Cadastrar aluno</a>'
-                '<a href="/cadastros/professor">Cadastrar professor</a>'
-                '<a href="/limites-reserva">Limites</a>'
-                '<a href="/estoque">Estoque</a>'
-            )
-
-        nav = f'<nav>{links}<form method="post" action="/sair">{oculto(csrf)}<button class="secundario">Sair</button></form></nav>'
+        contexto = ROTULOS.get(getattr(usuario, "perfil", None), "Laboratório")
+        corpo = f'''<body class="com-menu-lateral">
+    <a class="ir-conteudo" href="#conteudo">Ir para o conteúdo</a>
+    {navegacao.lateral(usuario)}
+    <div class="area-sistema">
+        <header class="cabecalho-sistema">
+            <span class="cabecalho-contexto">{contexto}</span>
+            <nav class="acoes-cabecalho" aria-label="Conta e ajuda">
+                <a href="/notificacoes">{navegacao.icone("notificacoes")}Notificações</a>
+                <a href="/ajuda">{navegacao.icone("ajuda")}Ajuda</a>
+                <form method="post" action="/sair">
+                    {oculto(csrf)}<button class="secundario" type="submit">Sair</button>
+                </form>
+            </nav>
+        </header>
+        {principal}
+    </div>'''
+    else:
+        corpo = f'''<body class="com-menu-lateral pagina-publica {classe_pagina}">
+            <a class="ir-conteudo" href="#conteudo">Ir para o conteúdo</a>
+            {navegacao.lateral_publica()}
+            <div class="area-sistema">
+                <header class="cabecalho-sistema">
+                    <span class="cabecalho-contexto">Sistema de Gestão de Laboratório de Pesquisa</span>
+                    <nav class="acoes-cabecalho" aria-label="Acesso ao sistema">
+                        <a href="/">Abrir o sistema<span aria-hidden="true"> →</span></a>
+                    </nav>
+                </header>
+                {principal}
+            </div>'''
     return f'''<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{escape(titulo)} · Gestão de Laboratório</title><link rel="stylesheet" href="/estilo.css"></head>
-<body><header><a class="marca" href="/">Gestão de Laboratório</a>{nav}</header>
-<main><h1>{escape(titulo)}</h1>{conteudo}</main></body></html>'''
+<title>{escape(titulo)} · Sistema de Gestão de Laboratório de Pesquisa</title>
+<meta name="theme-color" content="#132e3d">
+<link rel="stylesheet" href="{URL_ESTILO}">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/pwa/icone-192.png" type="image/png" sizes="192x192">
+<script src="/registrar-pwa.js" defer></script></head>
+{corpo}</body></html>'''
+
+
+def ajuda():
+    return layout("Ajuda do laboratório", """
+        <p class="introducao-publica">Consulte as orientações para acessar o laboratório e usar o aplicativo.</p>
+        <div class="grade-ajuda">
+        <section class="cartao">
+            <span class="icone-atalho" aria-hidden="true"><span class="icone-menu icone-perfil"></span></span>
+            <h2>Acessar sua conta</h2>
+            <p>Entre com o e-mail e a senha fornecidos pelo Chefe do laboratório.
+            As opções do menu acompanham seu perfil de acesso.</p>
+            <a class="botao" href="/entrar">Ir para o login</a>
+        </section>
+        <section class="cartao">
+            <span class="icone-atalho tom-configuracoes" aria-hidden="true"><span class="icone-menu icone-recursos"></span></span>
+            <h2>Instalar o aplicativo</h2>
+            <p>No Edge ou no Chrome, abra o menu do navegador e escolha a opção de instalar
+            este aplicativo. Use sempre o mesmo endereço para abrir o sistema.</p>
+        </section>
+        <section class="cartao ajuda-operacoes">
+            <h2>Consultar e operar</h2>
+            <ul>
+                <li>Use <strong>Recursos</strong> para consultar salas, bancadas e equipamentos.</li>
+                <li>Use <strong>Reservas</strong> para acompanhar solicitações e
+                <strong>Chaves</strong> para consultar cópias e empréstimos.</li>
+                <li>Use <strong>Protocolos</strong> para consultar documentos de segurança.</li>
+                <li>Use <strong>Notificações</strong> para acompanhar seus avisos.</li>
+            </ul>
+        </section>
+        <section class="cartao ajuda-conexao">
+            <h2>Acesso offline</h2>
+            <p>Esta ajuda pode ser consultada offline após o primeiro acesso online.
+            Conecte-se ao servidor para entrar, consultar dados do laboratório e salvar operações.</p>
+            <a class="botao" href="/">Abrir o sistema</a>
+        </section>
+        </div>
+    """, classe_pagina="pagina-ajuda")
+
+
+def offline():
+    return layout("Servidor indisponível", """
+        <section class="cartao">
+            <p>O sistema não conseguiu se conectar ao servidor. A ajuda continua disponível.
+            O acesso aos dados do laboratório e o envio de formulários dependem da conexão.</p>
+            <div class="acoes">
+                <a class="botao" href="/">Tentar novamente</a>
+                <a href="/ajuda">Consultar ajuda</a>
+            </div>
+        </section>
+    """)
 
 
 def aviso(mensagem, erro=False):
@@ -52,23 +119,61 @@ def campo(nome, rotulo, valor="", tipo="text", obrigatorio=True, limite=120, aut
 
 
 def login(csrf, mensagem="", email=""):
-    conteudo = aviso(mensagem, True) + f'''<section class="cartao estreito"><p>Entre com sua conta para acessar o laboratório.</p>
+    conteudo = f'''<section class="cartao cartao-login">
+<p class="introducao-publica">Entre com sua conta para acessar o laboratório.</p>
+{aviso(mensagem, True)}
 <form method="post" action="/entrar">{oculto(csrf)}
 {campo("email", "E-mail", email, "email", limite=254, autocomplete="username")}
 {campo("senha", "Senha", tipo="password", limite=128, autocomplete="current-password")}
-<button>Entrar</button></form></section>'''
-    return layout("Entrar", conteudo)
+<button>Entrar</button></form>
+<p class="ajuda-login">Precisa de orientação? <a href="/ajuda">Consulte a ajuda</a>.</p>
+</section>'''
+    return layout("Entrar", conteudo, classe_pagina="pagina-login")
 
 
 def perfil(usuario, csrf):
-    dados = [("Nome", usuario.nome), ("E-mail", usuario.email), ("Perfil", ROTULOS[usuario.perfil])]
+    dados = [("E-mail", usuario.email)]
     if isinstance(usuario, Professor):
         dados += [("Programa de pós", usuario.programa_pos), ("Ramal", usuario.ramal or "Não informado")]
     if isinstance(usuario, Aluno):
         dados += [("Matrícula", usuario.matricula), ("Categoria", CATEGORIAS[usuario.tipo])]
     detalhes = ''.join(f'<dt>{escape(k)}</dt><dd>{escape(str(v))}</dd>' for k, v in dados)
-    acao = '<a class="botao" href="/usuarios">Gerenciar usuários</a>' if isinstance(usuario, ChefeLaboratorio) else ''
-    return layout("Meu perfil", f'<section class="cartao"><dl>{detalhes}</dl>{acao}</section>', usuario, csrf)
+    nomes = usuario.nome.split()
+    iniciais = nomes[0][0].upper()[:1]
+    if len(nomes) > 1:
+        iniciais += nomes[-1][0].upper()[:1]
+    ficha = f'''
+        <section class="cartao perfil-dados" aria-labelledby="nome-perfil">
+            <div class="identidade-perfil">
+                <span class="avatar-perfil" aria-hidden="true">{escape(iniciais)}</span>
+                <div>
+                    <h2 class="nome-perfil" id="nome-perfil">{escape(usuario.nome)}</h2>
+                    <p class="cargo-perfil">{ROTULOS[usuario.perfil]}</p>
+                </div>
+            </div>
+            <dl>{detalhes}</dl>
+        </section>'''
+    atalhos = ''
+    if isinstance(usuario, ChefeLaboratorio):
+        atalhos = (
+            '<section class="cartao perfil-atalhos"><h2>Atalhos do Chefe</h2>'
+            + navegacao.atalhos((
+                ("/usuarios", "usuarios", "Gerenciar usuários", "Cadastrar alunos e professores"),
+                ("/estoque", "estoque", "Gerenciar estoque", "Consultar lotes e movimentações"),
+                ("/configuracoes", "configuracoes", "Configurar laboratório", "Revisar manutenção, restrições e limites"),
+            ))
+            + '</section>'
+        )
+    return layout("Meu perfil", f'<div class="grade-perfil">{ficha}{atalhos}</div>', usuario, csrf)
+
+
+def configuracoes(usuario, csrf):
+    conteudo = '<section class="cartao">' + navegacao.atalhos((
+        ("/manutencao", "recursos", "Manutenção", "Gerenciar a disponibilidade dos equipamentos"),
+        ("/restricoes", "restricao", "Restrições", "Gerenciar proibições e solicitações de reativação"),
+        ("/limites-reserva", "calendario", "Limites de reserva", "Configurar a duração e a quantidade de reservas"),
+    )) + '</section>'
+    return layout("Configurações do laboratório", conteudo, usuario, csrf)
 
 
 def usuarios(lista, ator, csrf, mensagem=""):

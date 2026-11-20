@@ -83,12 +83,13 @@ saldo = servico.movimentar(
 
 assert saldo == Decimal("3")
 tx.estoque.movimentar.assert_called_once_with(
-    1, 7, Decimal("-2"), "Uso em pesquisa"
+    1, 7, Decimal("-2"), "Uso em pesquisa", "USO"
 )
 
 print("Teste 3: saída funcionando.")
 
 # TESTE 4 - Impedir estoque negativo.
+tx.estoque.movimentar.side_effect = DadosInvalidos("Estoque insuficiente para esta saída.")
 try:
     servico.movimentar(
         "token_teste",
@@ -103,7 +104,7 @@ else:
         "Saída maior que o saldo deveria falhar."
     )
 
-assert tx.estoque.movimentar.call_count == 1
+assert tx.estoque.avaliar_alertas_item.call_count == 2
 
 print("Teste 4: estoque negativo bloqueado.")
 

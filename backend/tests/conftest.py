@@ -14,21 +14,38 @@ from gestao_lab.aplicacao.servicos import DadosCadastro, ServicoAutenticacao, Se
 from gestao_lab.infraestrutura.postgres import UnidadeTrabalhoPostgres
 from gestao_lab.aplicacao.servicos import ServicoRecursos, ServicoReservas, ServicoHistoricoUso, ServicoLimitesReserva
 from gestao_lab.aplicacao.chaves import ServicoChaves
+from gestao_lab.dominio.erros import DadosInvalidos
 from gestao_lab.dominio.usuarios import Perfil
+from gestao_lab.infraestrutura.configuracao import validar_versao_schema
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 
 
-@pytest.fixture
-def sistema():
-    url = os.environ.get("TEST_DATABASE_URL", "")
+@pytest.fixture(scope="session")
+def banco_de_teste():
+    url = os.environ.get("TEST_DATABASE_URL", "").strip()
     if not url:
         pytest.skip("Defina TEST_DATABASE_URL para executar a integração.")
-    banco = conninfo_to_dict(url).get("dbname", "")
-    if not (banco.startswith("gestao_laboratorio_teste") or banco.startswith("poodev_teste_")):
+    try:
+        banco = conninfo_to_dict(url).get("dbname", "")
+    except psycopg.ProgrammingError:
+        pytest.fail("TEST_DATABASE_URL contém uma configuração de conexão inválida.", pytrace=False)
+    if not banco.startswith(("gestao_laboratorio_teste", "poodev_teste_")):
         pytest.fail("TEST_DATABASE_URL deve apontar para um banco de teste com nome permitido.")
-    with psycopg.connect(url) as conn:
-        assert conn.execute("SELECT to_regclass('gestao_lab.usuario') IS NOT NULL").fetchone()[0], "Instale o schema no banco de testes."
+    with psycopg.connect(url, connect_timeout=5) as conn:
+        conn.read_only = True
+        if conn.execute("SELECT current_database()").fetchone()[0] != banco:
+            pytest.fail("O banco conectado não corresponde ao nome em TEST_DATABASE_URL.")
+        try:
+            validar_versao_schema(conn)
+        except DadosInvalidos as erro:
+            pytest.fail(str(erro), pytrace=False)
+    return url
+
+
+@pytest.fixture
+def sistema(banco_de_teste):
+    url = banco_de_teste
     transacao = lambda: UnidadeTrabalhoPostgres(url)
     senhas = ProtecaoSenha()
     autenticacao = ServicoAutenticacao(transacao, senhas)

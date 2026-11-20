@@ -1,6 +1,6 @@
 # Modelo relacional do banco implementado
 
-Banco `gestao_laboratorio`, esquema `gestao_lab`, revisão de 04/10/2026. Os diagramas mostram cardinalidades por associação; a exclusividade entre subclasses e entre alternativas de localização é imposta por restrições e triggers. O dicionário acompanha os nomes e tipos reais do esquema.
+Banco `gestao_laboratorio`, esquema `gestao_lab`, revisão de 19/11/2026, com as migrações até a versão 005. O modelo contém 27 tabelas. Os diagramas mostram cardinalidades por associação. A exclusividade entre subclasses e entre alternativas de localização é imposta por restrições e triggers. O dicionário acompanha os nomes e tipos do SQL base e das migrações.
 
 ## Usuários e laboratório
 
@@ -12,9 +12,12 @@ erDiagram
     PROFESSOR ||--o| CHEFE_LABORATORIO : especializa
     PROFESSOR ||--o{ ALUNO : orienta
     CHEFE_LABORATORIO ||--|| LABORATORIO : gerencia
+    USUARIO ||--o{ SESSAO_USUARIO : autentica
+    USUARIO ||--o| CHAVE_ASSINATURA_USUARIO : possui
+    LABORATORIO ||--o{ CHAVE_ASSINATURA_USUARIO : delimita
 ```
 
-Cada usuário deve ser Aluno **ou** Professor. Chefe é Professor. O laboratório tem exatamente um Chefe registrado. O orientador e as demais relações preservam o laboratório. `sessao_usuario` referencia um usuário e guarda validade, revogação e resumo do token.
+Cada usuário deve ser Aluno **ou** Professor. Chefe é Professor. O laboratório tem exatamente um Chefe registrado. O orientador e as demais relações preservam o laboratório. `sessao_usuario` referencia um usuário e guarda validade, revogação e resumo do token. `chave_assinatura_usuario` admite uma chave RSA por usuário. Sua FK composta exige que a chave pertença ao laboratório do usuário.
 
 ## Recursos e localização
 
@@ -62,6 +65,28 @@ erDiagram
 
 Cada cópia tem exatamente um destino entre Sala e Bancada. O empréstimo possui usuário, reserva, retirada, entrega, devolução e recebimento. Um índice parcial permite no máximo um empréstimo aberto por cópia. A condição física da cópia é separada da posse: a view deriva `EM_USO`, e ocorrências registram extravio ou indisponibilidade. Cancelamento/fim de reserva preservam o empréstimo aberto.
 
+## Protocolos e assinatura RSA
+
+```mermaid
+erDiagram
+    LABORATORIO ||--o{ PROTOCOLO : compartilha
+    USUARIO ||--o{ PROTOCOLO : autoria
+    USUARIO ||--o| CHAVE_ASSINATURA_USUARIO : possui
+    LABORATORIO ||--o{ CHAVE_ASSINATURA_USUARIO : delimita
+    CHEFE_LABORATORIO o|--o{ PROTOCOLO : valida
+    PROTOCOLO ||--o{ PROTOCOLO_EQUIPAMENTO : vincula
+    EQUIPAMENTO ||--o{ PROTOCOLO_EQUIPAMENTO : possui
+    CHEFE_LABORATORIO ||--o{ PROTOCOLO_EQUIPAMENTO : autoriza
+```
+
+A [migração 005](../migrations/005_assinatura_rsa.sql) introduz `chave_assinatura_usuario` e as evidências RSA de `protocolo`. O autor envia o PDF e assina no sistema. A aplicação calcula SHA-256 e a assinatura RSA com código próprio. O Chefe realiza a validação administrativa após a conferência da assinatura, e um protocolo validado pode ser vinculado aos equipamentos do mesmo laboratório.
+
+O documento permanece em `pdf_original`, com os mesmos bytes enviados. A assinatura é armazenada separadamente em `assinatura_rsa`. `rsa_resumo` guarda o resumo de 32 bytes, e `rsa_modulo` e `rsa_expoente_publico` preservam a chave pública usada na assinatura. A política é `rsa-sha256-v1`, registrada em `pdf_politica_verificacao`, e `pdf_sha256` deve corresponder tanto ao resumo RSA quanto ao SHA-256 do PDF. Os protocolos anteriores conservam a evidência e a política que já possuíam, com os campos RSA nulos.
+
+O expoente privado fica somente em `chave_assinatura_usuario`, junto do módulo e do expoente público. O servidor usa essa chave para assinar pelo autor autenticado. Os valores privados ficam fora das respostas web e da auditoria genérica, que copiaria a linha completa. A tabela revoga permissões de `PUBLIC` e bloqueia atualização, exclusão e truncamento. O acesso da aplicação e os backups devem preservar a confidencialidade dessa tabela, pois o expoente privado é persistido como texto.
+
+O registro da assinatura exige autor habilitado no mesmo laboratório e protocolo ainda não assinado. A operação bloqueia o laboratório antes de atualizar o protocolo. Após a assinatura, os gatilhos preservam o PDF, a autoria e a evidência criptográfica. Novas validações administrativas e novos vínculos a equipamentos exigem a política `rsa-sha256-v1`. O PostgreSQL verifica os vínculos, os estados e a consistência do resumo. A aplicação verifica a operação criptográfica RSA.
+
 ## Tabelas e correspondência com os requisitos
 
 | Tabela | Finalidade | Requisitos |
@@ -72,6 +97,7 @@ Cada cópia tem exatamente um destino entre Sala e Bancada. O empréstimo possui
 | `aluno` | Matrícula, tipo e orientador. | RF02 |
 | `chefe_laboratorio` | Especialização do Professor e chefia. | RF02, RF03 |
 | `sessao_usuario` | Persistência de sessões e resumo dos tokens. | RF01, RNF01 |
+| `chave_assinatura_usuario` | Chave RSA imutável por autor, com acesso privado pelo servidor. | RF09, RF10 |
 | `recurso` | Base de Sala, Bancada e Equipamento, estado e responsável. | RF04, RF15 |
 | `sala` | Identificação, localização e capacidade. | RF04, RF25 |
 | `bancada` | Sala obrigatória e identificação dentro da sala. | RF04, RF25 |
@@ -83,7 +109,7 @@ Cada cópia tem exatamente um destino entre Sala e Bancada. O empréstimo possui
 | `ocorrencia_chave` | Condição física e ocorrências de cada cópia. | RF23 |
 | `item_estoque` | Nome, lote, unidade, saldo, validade e limite. | RF07, RF08 |
 | `movimentacao_estoque` | Variação, saldos anterior/posterior, motivo e ator. | RF07, RF17 |
-| `protocolo` | Autor, PDF original, assinatura e validação. | RF09, RF10, RF12 |
+| `protocolo` | Autor, PDF original, assinatura RSA separada, evidência pública e validação. | RF09, RF10, RF12 |
 | `protocolo_equipamento` | Associação de protocolo validado a equipamentos. | RF11 |
 | `proibicao_aluno_equipamento` | Restrição ativa/histórica com motivo. | RF13 |
 | `solicitacao_reativacao` | Justificativa, decisão e resposta do Chefe. | RF14 |
@@ -93,7 +119,7 @@ Cada cópia tem exatamente um destino entre Sala e Bancada. O empréstimo possui
 | `historico_uso` | Auditoria de cadastros e operações. | RF17, RNF07 |
 | `schema_versao` | Identificação da instalação do modelo. | RNF05 |
 
-RF20/PWA usa os mesmos dados; sua implementação pertence ao frontend. RF26/agente especialista aguarda definição funcional e receberá migração específica. O quadro indica suporte de persistência; autenticação web, envio real de e-mail, tarefas periódicas e telas serão integrados nos próximos incrementos.
+RF20/PWA usa os mesmos dados e sua implementação pertence ao frontend. RF26/agente especialista aguarda definição funcional e receberá migração específica. O quadro indica o suporte de persistência dos requisitos.
 
 ## Integridade entre laboratórios
 

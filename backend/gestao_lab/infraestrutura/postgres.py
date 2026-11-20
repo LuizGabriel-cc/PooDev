@@ -18,6 +18,8 @@ from .chaves_postgres import ChavesPostgres, ConsultaHistoricoSemana4
 from decimal import Decimal
 from ..dominio.estoque import ItemEstoque, MovimentacaoEstoque
 from ..dominio.repositorios import RepositorioEstoque
+from .protocolos_postgres import ProtocolosPostgres
+from .operacoes_postgres import OperacoesPostgres
 
 
 CONSULTA_USUARIOS = """
@@ -43,13 +45,18 @@ class UsuariosPostgres(RepositorioUsuarios):
     def __init__(self, conexao):
         self._conexao = conexao
 
-    def buscar_por_email(self, email):
-        row = self._conexao.execute(CONSULTA_USUARIOS + " WHERE u.email = %s", (email,)).fetchone()
+    def _buscar(self, filtro, valor, *, bloquear):
+        consulta = CONSULTA_USUARIOS + filtro
+        if bloquear:
+            consulta += " FOR NO KEY UPDATE OF u"
+        row = self._conexao.execute(consulta, (valor,)).fetchone()
         return reconstruir_usuario(row) if row else None
 
-    def buscar_por_id(self, usuario_id):
-        row = self._conexao.execute(CONSULTA_USUARIOS + " WHERE u.id = %s", (usuario_id,)).fetchone()
-        return reconstruir_usuario(row) if row else None
+    def buscar_por_email(self, email, *, bloquear=False):
+        return self._buscar(" WHERE u.email = %s", email, bloquear=bloquear)
+
+    def buscar_por_id(self, usuario_id, *, bloquear=False):
+        return self._buscar(" WHERE u.id = %s", usuario_id, bloquear=bloquear)
 
     def listar(self, laboratorio_id):
         rows = self._conexao.execute(CONSULTA_USUARIOS + " WHERE u.laboratorio_id = %s ORDER BY u.nome, u.id", (laboratorio_id,))
@@ -746,6 +753,10 @@ def traduzir_erro(erro: psycopg.Error) -> Exception:
                 "Não alterar designação de cópia emprestada": "Devolva a chave antes de alterar sua designação.",
                 "Empréstimo já encerrado": "Este empréstimo já foi devolvido.",
                 "Cópia indisponível ou extraviada": "Esta cópia está indisponível ou extraviada.",
+                "Item inexistente ou inativo.": "Item inexistente ou inativo.",
+                "Estoque insuficiente para esta saída.": "Estoque insuficiente para esta saída.",
+                "Saldo excede o limite permitido.": "Saldo excede o limite permitido.",
+                "Produto vencido: somente descarte é permitido.": "Produto vencido: somente descarte é permitido.",
                 "Local ou composição possui reserva vigente/futura; regularize antes da alteração": "O local possui reserva ativa ou futura. Regularize as reservas antes de alterar a localização."
             }
 
@@ -765,6 +776,10 @@ def traduzir_erro(erro: psycopg.Error) -> Exception:
 
         # Cadastro duplicado: preserva a regra da Semana 2.
         if codigo == "23505":
+            if restricao == "proibicao_ativa_unica":
+                return DadosInvalidos("Já existe uma restrição ativa para esse aluno e equipamento.")
+            if restricao == "solicitacao_aberta_unica":
+                return DadosInvalidos("Já existe um pedido de reativação pendente.")
             if restricao == "chave_codigo_copia_key":
                 return CadastroDuplicado("Já existe uma chave com esse código de cópia.")
             if restricao == "emprestimo_chave_uma_posse_aberta":
@@ -865,16 +880,34 @@ class EstoquePostgres(RepositorioEstoque):
             for linha in resultado.fetchall()
         ]
 
-    def movimentar(self, chefe_id, item_id, variacao, motivo):
+    def encerrar_lote_vazio(self, item_id, laboratorio_id):
+        resultado = self._conexao.execute("""
+            UPDATE gestao_lab.item_estoque
+            SET ativo = false
+            WHERE id = %s AND laboratorio_id = %s AND ativo AND quantidade = 0
+        """, (item_id, laboratorio_id))
+        return resultado.rowcount == 1
+
+    def movimentar(self, chefe_id, item_id, variacao, motivo, finalidade="USO"):
+        if variacao > 0:
+            lote = self._conexao.execute("""
+                SELECT validade < gestao_lab.data_local_estoque() AS vencido
+                FROM gestao_lab.item_estoque WHERE id = %s AND ativo FOR UPDATE
+            """, (item_id,)).fetchone()
+            if lote and lote["vencido"]:
+                raise DadosInvalidos(
+                    "Este lote está vencido. Use Receber novo lote e informe a validade da reposição."
+                )
         resultado = self._conexao.execute("""
             SELECT gestao_lab.movimentar_estoque(
-                %s, %s, %s, %s
+                %s, %s, %s, %s, %s
             ) AS quantidade
         """, (
             chefe_id,
             item_id,
             variacao,
-            motivo
+            motivo,
+            finalidade
         ))
 
         return Decimal(
@@ -887,7 +920,7 @@ class EstoquePostgres(RepositorioEstoque):
                 id, laboratorio_id, item_id,
                 registrado_por, variacao,
                 quantidade_anterior, quantidade_posterior,
-                motivo, criado_em
+                motivo, criado_em, finalidade
             FROM gestao_lab.movimentacao_estoque
             WHERE laboratorio_id = %s
               AND (
@@ -919,6 +952,13 @@ class EstoquePostgres(RepositorioEstoque):
 
         return int(resultado.fetchone()["total"])
 
+    def avaliar_alertas_item(self, item_id: int) -> int:
+        resultado = self._conexao.execute(
+            "SELECT gestao_lab.avaliar_alertas_item_estoque(%s) AS total",
+            (item_id,),
+        )
+        return int(resultado.fetchone()["total"])
+
     def listar_alertas(
         self,
         laboratorio_id,
@@ -937,8 +977,9 @@ class EstoquePostgres(RepositorioEstoque):
               AND destinatario_id = %s
               AND tipo IN ('ESTOQUE_BAIXO', 'VALIDADE')
               AND chave_deduplicacao IS NOT NULL
+              AND resolvida_em IS NULL
             ORDER BY criado_em DESC, id DESC
-            LIMIT 50
+            LIMIT 10
         """, (
             laboratorio_id,
             destinatario_id
@@ -946,9 +987,17 @@ class EstoquePostgres(RepositorioEstoque):
 
         return resultado.fetchall()
 
-
-
-
+    def listar_pendencias(self, laboratorio_id):
+        resultado = self._conexao.execute("""
+            SELECT item_id, laboratorio_id, nome, lote, unidade,
+                   quantidade, limite_estoque_baixo, validade,
+                   estoque_baixo, vencido, validade_proxima
+            FROM gestao_lab.vw_pendencias_estoque
+            WHERE laboratorio_id = %s
+            ORDER BY vencido DESC NULLS LAST, estoque_baixo DESC,
+                     validade_proxima DESC NULLS LAST, nome, lote, item_id
+        """, (laboratorio_id,))
+        return resultado.fetchall()
 
 
 class UnidadeTrabalhoPostgres(UnidadeTrabalho):
@@ -973,6 +1022,8 @@ class UnidadeTrabalhoPostgres(UnidadeTrabalho):
         self.chaves = ChavesPostgres(self._conexao)
         self.sessoes = SessoesPostgres(self._conexao)
         self.estoque = EstoquePostgres(self._conexao)
+        self.protocolos = ProtocolosPostgres(self._conexao)
+        self.operacoes = OperacoesPostgres(self._conexao)
         return self
 
     def contexto(self, ator_id, motivo):

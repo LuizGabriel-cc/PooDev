@@ -29,7 +29,7 @@ BEGIN
     IF NOT EXISTS(SELECT 1 FROM usuario WHERE id=1 AND email='chefe.a@example.org') THEN
         RAISE EXCEPTION 'Massa de demonstração obrigatória; não executar em banco de produção';
     END IF;
-    PERFORM pg_temp.verificar((SELECT count(*)=26 FROM information_schema.tables WHERE table_schema='gestao_lab' AND table_type='BASE TABLE'),'26 tabelas criadas');
+    PERFORM pg_temp.verificar((SELECT count(*)=27 FROM information_schema.tables WHERE table_schema='gestao_lab' AND table_type='BASE TABLE'),'27 tabelas criadas');
     PERFORM pg_temp.verificar((SELECT sala_id=101 AND bancada_id=201 AND complemento_local='Posição 1' FROM vw_local_equipamento WHERE recurso_id=301),'Local derivado da bancada e posição exata');
     PERFORM pg_temp.verificar((SELECT sala_id=101 AND bancada_id IS NULL AND complemento_local='Parede norte' FROM vw_local_equipamento WHERE recurso_id=303),'Equipamento diretamente na sala');
     PERFORM pg_temp.verificar((SELECT count(*)=2 FROM recurso WHERE nome='Microscópio'),'Equipamentos repetidos são unidades distintas');
@@ -163,7 +163,7 @@ BEGIN
     PERFORM avaliar_alertas_estoque(1);
     PERFORM movimentar_estoque(1,2,-6,'Nova utilização');
     PERFORM pg_temp.verificar(avaliar_alertas_estoque(1)=1,'Novo episódio de estoque baixo gera novo alerta');
-    UPDATE item_estoque SET validade=current_date+1 WHERE id=1;
+    UPDATE item_estoque SET validade=data_local_estoque()+1 WHERE id=1;
     PERFORM pg_temp.verificar(avaliar_alertas_estoque(1)=1,'Validade próxima gera alerta');
     PERFORM pg_temp.verificar(avaliar_alertas_estoque(1)=0,'Validade próxima não gera alertas duplicados');
     PERFORM pg_temp.verificar((SELECT count(*)>0 FROM envio_email WHERE estado='PENDENTE'),'Alertas entram na fila de e-mail sem envio externo');
@@ -175,9 +175,39 @@ BEGIN
     VALUES(1,'Protocolo de teste',3,v_bytes,'protocolo.pdf') RETURNING id INTO pid;
     PERFORM pg_temp.verificar((SELECT pdf_original=v_bytes FROM protocolo WHERE id=pid),'PDF original preservado byte a byte');
     PERFORM pg_temp.esperar_erro(format('SELECT validar_protocolo(1,%s)',pid),'23514','Protocolo sem assinatura não é validado');
-    PERFORM pg_temp.esperar_erro(format('SELECT assinar_protocolo(4,%s)',pid),'42501','Somente autor assina protocolo');
+    PERFORM pg_temp.esperar_erro(format('SELECT assinar_protocolo(3,%s)',pid),'23514','Assinatura anterior foi substituída por RSA');
     PERFORM pg_temp.esperar_erro(format('INSERT INTO protocolo_equipamento(protocolo_id,equipamento_id,laboratorio_id,vinculado_por) VALUES(%s,301,1,1)',pid),'23514','Não vincula protocolo não validado');
-    PERFORM assinar_protocolo(3,pid);
+    PERFORM pg_temp.esperar_erro(format('SELECT registrar_assinatura_pdf_verificada(3,%s,''teste'')',pid),'23514','Registro externo de assinatura foi desativado');
+    PERFORM pg_temp.esperar_erro(format('UPDATE protocolo SET estado=''VALIDADO'',validado_em=clock_timestamp(),validado_por=1 WHERE id=%s',pid),'23514','Atualização direta também exige verificação digital');
+
+    PERFORM contexto_operacao(3,'Cadastro de protocolo de teste');
+    INSERT INTO protocolo(laboratorio_id,titulo,autor_id,pdf_original,nome_arquivo)
+    VALUES(1,'Protocolo verificado',3,v_bytes,'protocolo.pdf') RETURNING id INTO pid;
+    -- Estes valores artificiais exercitam a integridade do registro no SQL.
+    -- Geração de chaves, assinatura e verificação criptográfica são testadas em Python.
+    INSERT INTO chave_assinatura_usuario
+        (usuario_id,laboratorio_id,modulo,expoente_publico,expoente_privado)
+    VALUES (3,1,repeat('9',617),'65537','1'),(4,1,repeat('9',617),'65537','1');
+    PERFORM pg_temp.esperar_erro(
+        format('SELECT registrar_assinatura_rsa(4,%s,decode(repeat(''00'',256),''hex''),sha256(%L::bytea))',pid,v_bytes),
+        '42501','Somente autor registra assinatura RSA');
+    PERFORM pg_temp.esperar_erro(
+        format('SELECT registrar_assinatura_rsa(3,%s,decode(repeat(''00'',256),''hex''),decode(repeat(''00'',32),''hex''))',pid),
+        '23514','Resumo da assinatura precisa corresponder aos bytes do PDF');
+    PERFORM registrar_assinatura_rsa(3,pid,decode(repeat('00',256),'hex'),sha256(v_bytes));
+    PERFORM pg_temp.verificar(
+        (SELECT pdf_politica_verificacao='rsa-sha256-v1' AND pdf_sha256=sha256(v_bytes)
+            AND rsa_resumo=pdf_sha256 AND rsa_modulo=repeat('9',617)
+            AND rsa_expoente_publico='65537' AND octet_length(assinatura_rsa)=256
+         FROM protocolo WHERE id=pid),
+        'Política, assinatura, chave pública e digest do PDF são preservados');
+    PERFORM pg_temp.esperar_erro(
+        format('UPDATE protocolo SET assinatura_rsa=decode(repeat(''01'',256),''hex'') WHERE id=%s',pid),
+        '23514','Assinatura RSA registrada é imutável');
+    PERFORM pg_temp.verificar(
+        NOT EXISTS(SELECT 1 FROM historico_uso WHERE tabela='chave_assinatura_usuario'),
+        'Chave privada fica fora da auditoria genérica');
+    PERFORM pg_temp.esperar_erro(format('UPDATE protocolo SET pdf_politica_verificacao=''outra'' WHERE id=%s',pid),'23514','Evidência de verificação é imutável');
     PERFORM pg_temp.esperar_erro(format('SELECT validar_protocolo(2,%s)',pid),'42501','Somente Chefe valida protocolo');
     PERFORM validar_protocolo(1,pid);
     INSERT INTO protocolo_equipamento(protocolo_id,equipamento_id,laboratorio_id,vinculado_por) VALUES(pid,301,1,1),(pid,302,1,1);

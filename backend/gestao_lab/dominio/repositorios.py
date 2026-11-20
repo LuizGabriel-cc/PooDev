@@ -12,6 +12,7 @@ from .historico import HistoricoUso
 from .chaves import CopiaChave, DestinoChave, EmprestimoChave, ReservaAutorizada
 from decimal import Decimal
 from .estoque import ItemEstoque, MovimentacaoEstoque
+from .protocolos import Protocolo
 
 
 @dataclass(frozen=True)
@@ -26,10 +27,10 @@ class Sessao:
 
 class RepositorioUsuarios(ABC):
     @abstractmethod
-    def buscar_por_email(self, email: str) -> Usuario | None: ...
+    def buscar_por_email(self, email: str, *, bloquear: bool = False) -> Usuario | None: ...
 
     @abstractmethod
-    def buscar_por_id(self, usuario_id: int) -> Usuario | None: ...
+    def buscar_por_id(self, usuario_id: int, *, bloquear: bool = False) -> Usuario | None: ...
 
     @abstractmethod
     def listar(self, laboratorio_id: int) -> list[Usuario]: ...
@@ -268,9 +269,13 @@ class RepositorioEstoque(ABC):
         ...
 
     @abstractmethod
+    def encerrar_lote_vazio(self, item_id: int, laboratorio_id: int) -> bool:
+        ...
+
+    @abstractmethod
     def movimentar(
         self, chefe_id: int, item_id: int,
-        variacao: Decimal, motivo: str
+        variacao: Decimal, motivo: str, finalidade: str = "USO"
     ) -> Decimal:
         ...
 
@@ -291,6 +296,11 @@ class RepositorioEstoque(ABC):
         ...
 
     @abstractmethod
+    def avaliar_alertas_item(self, item_id: int) -> int:
+        """Reavalia os avisos de um item após cadastro ou movimentação."""
+        ...
+
+    @abstractmethod
     def listar_alertas(
         self,
         laboratorio_id: int,
@@ -299,11 +309,59 @@ class RepositorioEstoque(ABC):
         """Lista alertas ativos destinados ao Chefe."""
         ...
 
+    @abstractmethod
+    def listar_pendencias(self, laboratorio_id: int) -> list[dict]:
+        """Lista os itens do laboratório que precisam de providências."""
+        ...
 
 
 
 
 
+
+
+
+class RepositorioProtocolos(ABC):
+    @abstractmethod
+    def bloquear_laboratorio(self, laboratorio_id: int) -> None: ...
+
+    @abstractmethod
+    def listar(self, laboratorio_id: int, *, situacao: str | None = None) -> list[Protocolo]: ...
+
+    @abstractmethod
+    def buscar(self, protocolo_id: int, laboratorio_id: int) -> Protocolo | None: ...
+
+    @abstractmethod
+    def criar(
+        self, laboratorio_id: int, autor_id: int,
+        titulo: str, nome_arquivo: str, pdf_original: bytes
+    ) -> int: ...
+
+    @abstractmethod
+    def chave_autor(self, usuario_id: int, laboratorio_id: int) -> tuple[int, int, int] | None: ...
+
+    @abstractmethod
+    def salvar_chave_autor(self, usuario_id: int, laboratorio_id: int,
+                          modulo: int, expoente_publico: int, expoente_privado: int) -> None: ...
+
+    @abstractmethod
+    def registrar_assinatura_rsa(self, autor_id: int, protocolo_id: int,
+                                assinatura: bytes, resumo: bytes) -> None: ...
+
+    @abstractmethod
+    def evidencia_assinatura(self, protocolo_id: int, laboratorio_id: int) -> dict | None: ...
+
+    @abstractmethod
+    def validar(self, chefe_id: int, protocolo_id: int) -> None: ...
+
+    @abstractmethod
+    def vincular(
+        self, protocolo_id: int, equipamento_id: int,
+        laboratorio_id: int, chefe_id: int
+    ) -> None: ...
+
+    @abstractmethod
+    def arquivo(self, protocolo_id: int, laboratorio_id: int) -> tuple[str, bytes] | None: ...
 
 
 class RepositorioSessoes(ABC):
@@ -331,6 +389,7 @@ class UnidadeTrabalho(ABC):
     historico: RepositorioHistoricoUso
     chaves: RepositorioChaves
     estoque: RepositorioEstoque
+    protocolos: RepositorioProtocolos
 
     @abstractmethod
     def contexto(self, ator_id: int | None, motivo: str) -> None: ...
