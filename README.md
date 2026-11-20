@@ -23,6 +23,7 @@ O sistema será desenvolvido para cadastrar usuários e organizar o uso dos recu
 - [Assinatura RSA de protocolos](docs/README_Etapa6_Validacao_Assinaturas.md).
 - [Etapa 7 — Restrições, manutenção, ocorrências e e-mail institucional](docs/README_Etapa7.md).
 - [Etapa 8 — Instalação do sistema e acesso offline](docs/README_Etapa8.md).
+- **[Novo: protótipo do Agente Especialista de Estoque (RF26/RF29)](GUIA_AGENTE_ESTOQUE.md)** — documentação, migração 006, parâmetros, testes e limitações. Os documentos de etapas anteriores descrevem o estado do projeto à época de cada entrega.
 - [Proposta inicial do projeto](docs/SistemaDeGestaoDeLaboratorio.pdf).
 
 ## Instalação e testes

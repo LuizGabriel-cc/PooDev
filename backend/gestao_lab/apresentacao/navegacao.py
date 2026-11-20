@@ -45,6 +45,7 @@ def lateral(usuario):
             '<p class="legenda-menu">Administração</p>'
             + _link("/usuarios", "Usuários", "usuarios", prefixos=("/cadastros/aluno", "/cadastros/professor"))
             + _link("/estoque", "Estoque", "estoque")
+            + _link("/agente-estoque", "Agente de estoque", "estoque")
             + _link("/configuracoes", "Configurações", "configuracoes",
                     prefixos=("/manutencao", "/restricoes", "/limites-reserva"))
         )

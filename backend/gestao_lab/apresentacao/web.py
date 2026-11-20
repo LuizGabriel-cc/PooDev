@@ -20,6 +20,7 @@ from ..dominio.erros import AcessoNegado, CredenciaisInvalidas, DadosInvalidos, 
 from ..dominio.usuarios import Perfil, Professor, ChefeLaboratorio
 from datetime import date, datetime, timedelta, timezone
 from . import paginas_estoque
+from . import paginas_agente_estoque
 from ..dominio.protocolos import LIMITE_PDF_BYTES
 from ..infraestrutura.previa_protocolos import contar_paginas, renderizar_previa
 
@@ -59,7 +60,7 @@ class LimiteLogin:
 
 
 class AplicacaoWeb:
-    def __init__(self, autenticacao, cadastro, configuracao, recursos=None, reservas=None, historico=None, limites=None, chaves=None, estoque=None, protocolos=None, operacoes=None):
+    def __init__(self, autenticacao, cadastro, configuracao, recursos=None, reservas=None, historico=None, limites=None, chaves=None, estoque=None, protocolos=None, operacoes=None, agente_estoque=None):
         self._autenticacao = autenticacao
         self._cadastro = cadastro
         self._recursos = recursos
@@ -72,6 +73,7 @@ class AplicacaoWeb:
         self._historico = historico
         self._limites = limites
         self._estoque = estoque
+        self._agente_estoque = agente_estoque
         self._protocolos = protocolos
         self._operacoes = operacoes
 
@@ -348,6 +350,33 @@ class AplicacaoWeb:
 
 
     
+    def _rotear_agente_estoque(self, rota, metodo, environ, campos, token, usuario, csrf):
+        if not isinstance(usuario, ChefeLaboratorio):
+            raise AcessoNegado("Somente o Chefe pode usar o agente de estoque.")
+        if self._agente_estoque is None:
+            raise FalhaPersistencia("Agente de estoque indisponível.")
+        if rota == "/agente-estoque/analisar" and metodo == "POST":
+            self._agente_estoque.analisar(token, registrar=True)
+            return self._redirecionar("/agente-estoque?resultado=analise")
+        if rota == "/agente-estoque/decidir" and metodo == "POST":
+            self._agente_estoque.decidir(
+                token, self._identificador(campos.get("recomendacao_id")),
+                campos.get("decisao", ""),
+            )
+            return self._redirecionar("/agente-estoque?resultado=decisao")
+        if rota != "/agente-estoque" or metodo != "GET":
+            return Resposta("Método não permitido.", 405, [("Allow", "GET" if rota == "/agente-estoque" else "POST")])
+        resultado = self._ler_consulta(environ).get("resultado", "")
+        mensagem = {
+            "analise": "Análise concluída. As recomendações elegíveis foram registradas ou atualizadas.",
+            "decisao": "Decisão registrada com sucesso.",
+        }.get(resultado, "")
+        analises = self._agente_estoque.analisar(token)
+        recomendacoes = self._agente_estoque.listar_recomendacoes(token)
+        return Resposta(paginas_agente_estoque.painel(
+            usuario, csrf, analises, recomendacoes, mensagem=mensagem
+        ))
+
     def _rotear_estoque(
         self, metodo, environ, campos, token, usuario, csrf
     ):
@@ -721,6 +750,9 @@ class AplicacaoWeb:
             "/chaves/devolver",
             "/chaves/ocorrencia",
             "/estoque",
+            "/agente-estoque",
+            "/agente-estoque/analisar",
+            "/agente-estoque/decidir",
             "/protocolos",
             "/protocolos/novo",
             "/protocolos/detalhe",
@@ -1149,6 +1181,12 @@ class AplicacaoWeb:
         
         
         
+        if rota.startswith("/agente-estoque"):
+            return self._rotear_agente_estoque(
+                rota, metodo, environ, campos if metodo == "POST" else {},
+                token, usuario, csrf,
+            )
+
         if rota == "/estoque":
             return self._rotear_estoque(
                 metodo,

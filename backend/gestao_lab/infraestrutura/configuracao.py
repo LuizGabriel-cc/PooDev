@@ -15,12 +15,12 @@ def validar_versao_schema(conexao):
 
     completo = conexao.execute("""
         SELECT 1 FROM gestao_lab.schema_versao
-        WHERE versao BETWEEN 1 AND 5
-        HAVING count(*) = 5
+        WHERE versao BETWEEN 1 AND 6
+        HAVING count(*) = 6
     """).fetchone()
     if completo is None:
         raise DadosInvalidos(
-            "Banco sem as versões 1 a 5 do schema. Confira as migrações em database/README.md."
+            "Banco sem as versões 1 a 6 do schema. Confira as migrações em database/README.md."
         )
 
 

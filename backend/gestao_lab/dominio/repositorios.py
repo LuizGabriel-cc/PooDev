@@ -389,6 +389,7 @@ class UnidadeTrabalho(ABC):
     historico: RepositorioHistoricoUso
     chaves: RepositorioChaves
     estoque: RepositorioEstoque
+    agente_estoque: object  # Repositório específico do agente (RF26/RF29).
     protocolos: RepositorioProtocolos
 
     @abstractmethod

@@ -15,6 +15,7 @@ from .aplicacao.servicos import ServicoHistoricoUso
 from .aplicacao.servicos import ServicoLimitesReserva
 from .aplicacao.chaves import ServicoChaves
 from .aplicacao.servicos import ServicoEstoque
+from .aplicacao.agente_estoque import ServicoAgenteEstoque
 from .aplicacao.protocolos import ServicoProtocolos
 from .aplicacao.operacoes import ServicoOperacoes
 from .aplicacao.notificacoes import ServicoEnvioEmail, iniciar_envio_email
@@ -110,12 +111,13 @@ def main():
             limites = ServicoLimitesReserva(transacao, autenticacao)
             chaves = ServicoChaves(transacao, autenticacao)
             estoque = ServicoEstoque(transacao, autenticacao)
+            agente_estoque = ServicoAgenteEstoque(transacao, autenticacao)
             protocolos = ServicoProtocolos(transacao, autenticacao)
             operacoes = ServicoOperacoes(transacao, autenticacao)
             app = AplicacaoWeb(
                 autenticacao, cadastro, config, recursos=recursos, reservas=reservas,
                 historico=historico, limites=limites, chaves=chaves, estoque=estoque,
-                protocolos=protocolos, operacoes=operacoes,
+                protocolos=protocolos, operacoes=operacoes, agente_estoque=agente_estoque,
             )
             try:
                 smtp = ConfiguracaoSMTP.do_ambiente()

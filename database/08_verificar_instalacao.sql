@@ -1,5 +1,5 @@
 -- Conferência de leitura para um banco que já tenha o schema inicial instalado.
--- A versão atual requer PostgreSQL >=16, registros 1 a 5 e todos os recursos verificados abaixo.
+-- A versão atual requer PostgreSQL >=16, registros 1 a 6 e todos os recursos verificados abaixo.
 BEGIN TRANSACTION READ ONLY;
 
 SELECT current_database() AS banco,
@@ -12,7 +12,7 @@ FROM information_schema.tables
 WHERE table_schema = 'gestao_lab' AND table_type = 'BASE TABLE';
 
 SELECT coalesce(max(versao), 0) AS ultima_versao,
-       count(*) FILTER (WHERE versao IN (1, 2, 3, 4, 5)) = 5 AS versoes_obrigatorias_aplicadas
+       count(*) FILTER (WHERE versao IN (1, 2, 3, 4, 5, 6)) = 6 AS versoes_obrigatorias_aplicadas
 FROM gestao_lab.schema_versao;
 
 SELECT versao, descricao, aplicada_em
@@ -31,7 +31,8 @@ SELECT to_regclass('gestao_lab.vw_pendencias_estoque') IS NOT NULL AS pendencias
        to_regprocedure('gestao_lab.movimentar_estoque(bigint,bigint,numeric,text)') IS NOT NULL AS movimentar_estoque_legado,
        to_regprocedure('gestao_lab.movimentar_estoque(bigint,bigint,numeric,text,text)') IS NOT NULL AS movimentar_estoque_com_finalidade,
        to_regprocedure('gestao_lab.registrar_assinatura_rsa(bigint,bigint,bytea,bytea)') IS NOT NULL AS registrar_assinatura_rsa,
-       to_regclass('gestao_lab.chave_assinatura_usuario') IS NOT NULL AS chaves_dos_autores;
+       to_regclass('gestao_lab.chave_assinatura_usuario') IS NOT NULL AS chaves_dos_autores,
+       to_regclass('gestao_lab.recomendacao_estoque') IS NOT NULL AS recomendacoes_agente;
 
 SELECT count(*) FILTER (WHERE table_name = 'notificacao' AND column_name = 'resolvida_em') = 1 AS encerramento_de_alertas,
        count(*) FILTER (WHERE table_name = 'movimentacao_estoque' AND column_name = 'finalidade') = 1 AS finalidade_da_movimentacao,
