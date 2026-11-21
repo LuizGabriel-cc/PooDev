@@ -21,6 +21,7 @@ from ..dominio.usuarios import Perfil, Professor, ChefeLaboratorio
 from datetime import date, datetime, timedelta, timezone
 from . import paginas_estoque
 from . import paginas_agente_estoque
+from ..dominio.cenarios_demonstracao_estoque import executar_cenario
 from ..dominio.protocolos import LIMITE_PDF_BYTES
 from ..infraestrutura.previa_protocolos import contar_paginas, renderizar_previa
 
@@ -355,6 +356,14 @@ class AplicacaoWeb:
             raise AcessoNegado("Somente o Chefe pode usar o agente de estoque.")
         if self._agente_estoque is None:
             raise FalhaPersistencia("Agente de estoque indisponível.")
+        if rota == "/agente-estoque/demonstracao":
+            if metodo != "GET":
+                return Resposta("Método não permitido.", 405, [("Allow", "GET")])
+            cenario = self._ler_consulta(environ).get("cenario", "risco")
+            resultado = executar_cenario(cenario)
+            return Resposta(paginas_agente_estoque.demonstracao(
+                usuario, csrf, resultado
+            ))
         if rota == "/agente-estoque/analisar" and metodo == "POST":
             self._agente_estoque.analisar(token, registrar=True)
             return self._redirecionar("/agente-estoque?resultado=analise")
@@ -751,6 +760,7 @@ class AplicacaoWeb:
             "/chaves/ocorrencia",
             "/estoque",
             "/agente-estoque",
+            "/agente-estoque/demonstracao",
             "/agente-estoque/analisar",
             "/agente-estoque/decidir",
             "/protocolos",

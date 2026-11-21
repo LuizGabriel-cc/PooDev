@@ -45,3 +45,11 @@ Demonstração sem banco, na pasta `backend`:
 ```bash
 python -m gestao_lab.dominio.demo_agente_estoque
 ```
+
+## Demonstração acadêmica do agente (V3)
+
+Para exibir o cálculo de risco de estoque diretamente pelo site, sem
+modificar o banco do laboratório, entre como Chefe e abra
+**Agente de estoque → Abrir modo de demonstração**. Os dados dessa tela são
+sintéticos, criados somente em memória. Consulte
+[`GUIA_DEMONSTRACAO_SITE.md`](GUIA_DEMONSTRACAO_SITE.md) para os oito cenários.

@@ -195,6 +195,12 @@ def test_rota_web_de_analise_e_decisao_exigem_chefe():
     from types import SimpleNamespace
     from gestao_lab.apresentacao.web import AplicacaoWeb
     servico, tx, _, chefe = _servico()
+    # Evita que a passagem dos dias altere o resultado do teste de rota.
+    # O cenário sintético do módulo foi fixado em AGORA.
+    analisar_original = servico.analisar
+    servico.analisar = lambda token, *, registrar=False: analisar_original(
+        token, registrar=registrar, agora=AGORA
+    )
     app = AplicacaoWeb(Mock(), Mock(), SimpleNamespace(segredo_csrf=b"x" * 32),
                        agente_estoque=servico)
     resposta = app._rotear_agente_estoque(
