@@ -61,7 +61,18 @@ class ChavesPostgres(RepositorioChaves):
         """, (destino.laboratorio_id, codigo, destino.id if destino.tipo == "SALA" else None,
               destino.id if destino.tipo == "BANCADA" else None, ator_id, designada_para)).fetchone()["id"]
 
+    def _bloquear_laboratorio(self, chave_id):
+        # Mesma ordem de bloqueio usada na retirada, devolução e ocorrência.
+        self._conexao.execute("""
+            SELECT 1
+            FROM gestao_lab.laboratorio l
+            JOIN gestao_lab.chave c ON c.laboratorio_id = l.id
+            WHERE c.id = %s
+            FOR UPDATE OF l
+        """, (chave_id,))
+
     def designar(self, chave_id, ator_id, designada_para):
+        self._bloquear_laboratorio(chave_id)
         self._conexao.execute("UPDATE gestao_lab.chave SET designada_por=%s,designada_para=%s WHERE id=%s",
                               (ator_id, designada_para, chave_id))
 
@@ -114,7 +125,62 @@ class ChavesPostgres(RepositorioChaves):
         self._conexao.execute("SELECT gestao_lab.devolver_chave(%s,%s)", (emprestimo_id, ator_id))
 
     def registrar_ocorrencia(self, ator_id, chave_id, condicao, descricao):
-        self._conexao.execute("SELECT gestao_lab.registrar_ocorrencia_chave(%s,%s,%s,%s)", (ator_id, chave_id, condicao, descricao))
+        self._bloquear_laboratorio(chave_id)
+        anterior = self._conexao.execute(
+            "SELECT condicao FROM gestao_lab.chave WHERE id = %s", (chave_id,),
+        ).fetchone()
+        ocorrencia = self._conexao.execute(
+            "SELECT gestao_lab.registrar_ocorrencia_chave(%s,%s,%s,%s) AS id",
+            (ator_id, chave_id, condicao, descricao),
+        ).fetchone()
+        if anterior["condicao"] == "OPERACIONAL" and condicao != "OPERACIONAL":
+            self._avisar_falta_de_copia(chave_id, ocorrencia["id"])
+
+    def _avisar_falta_de_copia(self, chave_id, ocorrencia_id):
+        self._conexao.execute("""
+            WITH copia AS (
+                SELECT id, laboratorio_id, designada_para, COALESCE(sala_id, bancada_id) AS destino_id
+                FROM gestao_lab.chave WHERE id = %s
+            ), alternativas AS (
+                SELECT v.designada_para, v.estado, e.reserva_id
+                FROM gestao_lab.vw_chave_estado v
+                JOIN copia c ON c.laboratorio_id = v.laboratorio_id
+                            AND c.destino_id = COALESCE(v.sala_id, v.bancada_id)
+                LEFT JOIN gestao_lab.emprestimo_chave e ON e.id = v.emprestimo_aberto_id
+                WHERE v.condicao = 'OPERACIONAL'
+            ), afetados AS (
+                SELECT DISTINCT r.usuario_id
+                FROM copia c
+                JOIN gestao_lab.reserva r ON r.laboratorio_id = c.laboratorio_id
+                JOIN gestao_lab.usuario u ON u.id = r.usuario_id AND u.ativo
+                WHERE r.estado = 'CONFIRMADA' AND r.fim > clock_timestamp()
+                  AND (c.designada_para IS NULL OR c.designada_para = r.usuario_id)
+                  AND EXISTS (
+                      SELECT 1 FROM gestao_lab.reserva_recurso rr
+                      CROSS JOIN LATERAL gestao_lab.recursos_ancestrais(rr.recurso_id) a
+                      WHERE rr.reserva_id = r.id AND a.recurso_id = c.destino_id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM alternativas a
+                      WHERE a.reserva_id = r.id OR (
+                          a.estado = 'DISPONIVEL'
+                          AND (a.designada_para IS NULL OR a.designada_para = r.usuario_id)
+                      )
+                  )
+            ), destinatarios AS (
+                SELECT usuario_id FROM afetados
+                UNION
+                SELECT l.chefe_usuario_id
+                FROM gestao_lab.laboratorio l JOIN copia c ON c.laboratorio_id = l.id
+                WHERE EXISTS (SELECT 1 FROM afetados)
+                   OR NOT EXISTS (SELECT 1 FROM alternativas WHERE estado = 'DISPONIVEL')
+            )
+            SELECT gestao_lab.notificar(c.laboratorio_id, d.usuario_id, 'CHAVE_INDISPONIVEL',
+                'Cópia de chave indisponível para ' || r.nome || '. Consulte a página Chaves.',
+                jsonb_build_object('chave_id', c.id, 'ocorrencia_chave_id', %s::bigint))
+            FROM copia c JOIN gestao_lab.recurso r ON r.id = c.destino_id
+            CROSS JOIN destinatarios d
+        """, (chave_id, ocorrencia_id))
 
 
 class ConsultaHistoricoSemana4:

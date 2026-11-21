@@ -139,6 +139,7 @@ class MovimentacaoEstoque:
     motivo: str
     criado_em: datetime
     id: int | None = None
+    finalidade: str | None = None
 
     def __post_init__(self):
         for atributo in (
@@ -151,16 +152,9 @@ class MovimentacaoEstoque:
         if self.id is not None:
             _id(self.id, "Movimentação")
 
-        if not isinstance(self.motivo, str):
-            raise DadosInvalidos(
-                "Motivo deve ser texto."
-            )
-
-        object.__setattr__(
-            self,
-            "motivo",
-            texto_obrigatorio(self.motivo, "Motivo", 500)
-        )
+        # A gravação limita o motivo. O histórico pode conter textos legados maiores.
+        if not isinstance(self.motivo, str) or not self.motivo.strip():
+            raise DadosInvalidos("Informe o motivo da movimentação.")
 
         for atributo in (
             "variacao",
@@ -186,6 +180,11 @@ class MovimentacaoEstoque:
                 "Movimentação inconsistente com o saldo "
                 "anterior e posterior."
             )
+
+        if self.finalidade is not None and (
+            self.finalidade not in ("USO", "DESCARTE") or self.variacao >= 0
+        ):
+            raise DadosInvalidos("Finalidade da movimentação inválida.")
 
         if (
             not isinstance(self.criado_em, datetime)

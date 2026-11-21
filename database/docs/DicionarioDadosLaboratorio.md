@@ -1,6 +1,6 @@
 # Dicionário de dados — Laboratório
 
-Extraído do catálogo PostgreSQL após executar o SQL entregue. Esquema `gestao_lab`; revisão de 04/10/2026. As regras complementares estão em `02_regras.sql`.
+Esquema `gestao_lab`, revisão de 19/11/2026, com as migrações até a versão 005 e 27 tabelas. As definições seguem [BancoLaboratorioPostgreSQL.sql](../BancoLaboratorioPostgreSQL.sql) e as [migrações](../migrations/README.md). A [migração 005](../migrations/005_assinatura_rsa.sql) define a chave por autor e a evidência da assinatura RSA realizada no sistema.
 
 ## Tipos enumerados
 
@@ -121,6 +121,36 @@ Restrições declarativas:
 - `chave_id_laboratorio_id_key`: `CREATE UNIQUE INDEX chave_id_laboratorio_id_key ON gestao_lab.chave USING btree (id, laboratorio_id)`
 - `chave_pkey`: `CREATE UNIQUE INDEX chave_pkey ON gestao_lab.chave USING btree (id)`
 - `chave_sala_idx`: `CREATE INDEX chave_sala_idx ON gestao_lab.chave USING btree (sala_id)`
+
+## chave_assinatura_usuario
+
+| Coluna | Tipo | Obrigatória | Padrão ou geração |
+|---|---|---|---|
+| `usuario_id` | `bigint` | Sim | — |
+| `laboratorio_id` | `bigint` | Sim | — |
+| `modulo` | `text` | Sim | — |
+| `expoente_publico` | `text` | Sim | — |
+| `expoente_privado` | `text` | Sim | — |
+| `criado_em` | `timestamp with time zone` | Sim | clock_timestamp() |
+
+Criada na migração 005. Os parâmetros RSA são inteiros positivos representados como texto decimal, para preservar valores maiores que os tipos inteiros do PostgreSQL. Há no máximo uma chave por usuário. A FK composta vincula a chave ao mesmo laboratório do autor.
+
+Restrições declarativas
+
+- `chave_assinatura_usuario_pkey` define `PRIMARY KEY (usuario_id)`.
+- `chave_assinatura_usuario_usuario_id_laboratorio_id_fkey` define `FOREIGN KEY (usuario_id, laboratorio_id) REFERENCES usuario(id, laboratorio_id)`.
+- `chave_assinatura_usuario_modulo_check` exige dígitos decimais, valor positivo e comprimento entre 617 e 1234 caracteres.
+- `chave_assinatura_usuario_expoente_publico_check` exige o valor decimal `65537`.
+- `chave_assinatura_usuario_expoente_privado_check` exige dígitos decimais, valor positivo e comprimento de até 1234 caracteres.
+- Todas as colunas possuem `NOT NULL`.
+
+Índices
+
+- `chave_assinatura_usuario_pkey` é o índice único B-tree de `usuario_id`.
+
+Controle de acesso e imutabilidade
+
+O servidor persiste `expoente_privado` como texto e o utiliza somente na assinatura pelo autor autenticado. O material privado fica fora das respostas web e do registro de auditoria genérica. A tabela possui `REVOKE ALL ON chave_assinatura_usuario FROM PUBLIC`, e os gatilhos `chave_assinatura_imutavel` e `chave_assinatura_sem_truncate` impedem atualização, exclusão e truncamento. As permissões concedidas à aplicação e o acesso a backups precisam preservar a confidencialidade da chave.
 
 ## chefe_laboratorio
 
@@ -592,6 +622,16 @@ Restrições declarativas:
 | `validado_em` | `timestamp with time zone` | Não | — |
 | `validado_por` | `bigint` | Não | — |
 | `criado_em` | `timestamp with time zone` | Sim | clock_timestamp() |
+| `pdf_politica_verificacao` | `text` | Não | — |
+| `pdf_sha256` | `bytea` | Não | — |
+| `assinatura_rsa` | `bytea` | Não | — |
+| `rsa_resumo` | `bytea` | Não | — |
+| `rsa_modulo` | `text` | Não | — |
+| `rsa_expoente_publico` | `text` | Não | — |
+
+`pdf_politica_verificacao` e `pdf_sha256` foram introduzidos pela migração 004. A migração 005 acrescenta os quatro campos RSA. Eles começam nulos no protocolo enviado e se tornam obrigatórios para registrar a política `rsa-sha256-v1`.
+
+`pdf_original` mantém os bytes enviados. `assinatura_rsa` armazena a assinatura separadamente do PDF, sem inserir uma assinatura no arquivo. `rsa_resumo` contém o SHA-256 de 32 bytes e deve coincidir com `pdf_sha256`. `rsa_modulo` e `rsa_expoente_publico` guardam uma cópia da chave pública usada na assinatura, para permitir a conferência posterior. O protocolo não guarda o expoente privado.
 
 Restrições declarativas:
 
@@ -617,6 +657,14 @@ Restrições declarativas:
 - `protocolo_titulo_not_null`: `NOT NULL titulo`
 - `protocolo_pkey`: `PRIMARY KEY (id)`
 - `protocolo_id_laboratorio_id_key`: `UNIQUE (id, laboratorio_id)`
+- `protocolo_evidencia_pdf_coerente` permite política e resumo nulos em protocolos pendentes. Uma evidência registrada exige assinatura, política preenchida e `pdf_sha256 = sha256(pdf_original)`.
+- `protocolo_evidencia_rsa_coerente` exige, para `rsa-sha256-v1`, assinatura de 256 a 512 bytes, resumo de 32 bytes igual a `pdf_sha256`, módulo decimal positivo de 617 a 1234 caracteres, expoente público `65537` e `assinado_em` preenchido. Para as demais políticas, os quatro campos RSA permanecem nulos.
+
+Registro e preservação da assinatura
+
+`registrar_assinatura_rsa(autor, protocolo, assinatura, resumo)` exige usuário habilitado no mesmo laboratório, chave cadastrada e protocolo `NAO_VALIDADO` de sua autoria ainda não assinado. A operação bloqueia o laboratório antes do protocolo e grava a evidência, a data e o autor em uma atualização atômica. A conferência criptográfica RSA é feita pela aplicação. As restrições SQL verificam o resumo, os vínculos, o estado e a forma da evidência registrada.
+
+Os gatilhos preservam o PDF, a autoria e a evidência após a assinatura. A validação administrativa cabe ao Chefe e, a partir da migração 005, exige a política `rsa-sha256-v1`. As funções anteriores `assinar_protocolo` e `registrar_assinatura_pdf_verificada` passam a rejeitar novas chamadas e orientam o uso da assinatura RSA. Registros anteriores conservam as evidências existentes e sua política original.
 
 Índices:
 
@@ -625,6 +673,8 @@ Restrições declarativas:
 - `protocolo_pkey`: `CREATE UNIQUE INDEX protocolo_pkey ON gestao_lab.protocolo USING btree (id)`
 
 ## protocolo_equipamento
+
+Novos vínculos exigem protocolo `VALIDADO` com política `rsa-sha256-v1` e autorização do Chefe do mesmo laboratório. A migração 005 preserva os vínculos anteriores.
 
 | Coluna | Tipo | Obrigatória | Padrão ou geração |
 |---|---|---|---|
@@ -929,4 +979,4 @@ Restrições declarativas:
 
 ## Integridade adicional
 
-As triggers verificam subclasses completas, geram a abrangência das reservas, impedem mudança de local/composição afetando reservas vigentes/futuras, validam empréstimos, cancelam reservas por manutenção/proibição, controlam reativação e preservam auditoria. A descrição funcional e as decisões de implementação estão no guia e no modelo relacional.
+As triggers verificam subclasses completas, geram a abrangência das reservas, impedem mudança de local/composição afetando reservas vigentes/futuras, validam empréstimos, cancelam reservas por manutenção/proibição, controlam reativação e preservam auditoria. Para a assinatura RSA, também protegem a chave do autor e a evidência registrada no protocolo. A tabela de chaves fica fora da auditoria genérica para preservar o expoente privado. A descrição funcional e as decisões de implementação estão no guia e no modelo relacional.

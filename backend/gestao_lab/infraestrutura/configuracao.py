@@ -5,6 +5,25 @@ import secrets
 from ..dominio.erros import DadosInvalidos
 
 
+def validar_versao_schema(conexao):
+    """Exige o esquema inicial e todas as migrações usadas pela aplicação."""
+    existe = conexao.execute("""
+        SELECT 1 WHERE to_regclass('gestao_lab.schema_versao') IS NOT NULL
+    """).fetchone()
+    if existe is None:
+        raise DadosInvalidos("Instale o schema gestao_lab conforme database/README.md.")
+
+    completo = conexao.execute("""
+        SELECT 1 FROM gestao_lab.schema_versao
+        WHERE versao BETWEEN 1 AND 6
+        HAVING count(*) = 6
+    """).fetchone()
+    if completo is None:
+        raise DadosInvalidos(
+            "Banco sem as versões 1 a 6 do schema. Confira as migrações em database/README.md."
+        )
+
+
 @dataclass(frozen=True)
 class Configuracao:
     database_url: str = field(repr=False)

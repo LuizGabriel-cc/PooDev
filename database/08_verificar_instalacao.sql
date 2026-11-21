@@ -1,14 +1,19 @@
--- Conferência de leitura: pode executar no banco instalado pelo pgAdmin.
--- Esperado: banco escolhido, PostgreSQL >=16, isolamento read committed,
--- 26 tabelas, versão 1 (ou a última migração), extensão e operações presentes.
+-- Conferência de leitura para um banco que já tenha o schema inicial instalado.
+-- A versão atual requer PostgreSQL >=16, registros 1 a 6 e todos os recursos verificados abaixo.
+BEGIN TRANSACTION READ ONLY;
+
 SELECT current_database() AS banco,
        current_setting('server_version') AS versao_postgresql,
        current_setting('server_version_num')::integer >= 160000 AS versao_suportada,
        current_setting('default_transaction_isolation') AS isolamento_padrao;
 
-SELECT count(*) AS tabelas, count(*) = 26 AS estrutura_inicial_completa
+SELECT count(*) AS tabelas
 FROM information_schema.tables
 WHERE table_schema = 'gestao_lab' AND table_type = 'BASE TABLE';
+
+SELECT coalesce(max(versao), 0) AS ultima_versao,
+       count(*) FILTER (WHERE versao IN (1, 2, 3, 4, 5, 6)) = 6 AS versoes_obrigatorias_aplicadas
+FROM gestao_lab.schema_versao;
 
 SELECT versao, descricao, aplicada_em
 FROM gestao_lab.schema_versao ORDER BY versao DESC;
@@ -20,6 +25,23 @@ SELECT to_regprocedure('gestao_lab.criar_reserva(bigint,bigint,timestamptz,times
        to_regprocedure('gestao_lab.retirar_chave(bigint,bigint,bigint,bigint)') IS NOT NULL AS retirar_chave,
        to_regprocedure('gestao_lab.devolver_chave(bigint,bigint)') IS NOT NULL AS devolver_chave;
 
+SELECT to_regclass('gestao_lab.vw_pendencias_estoque') IS NOT NULL AS pendencias_estoque,
+       to_regprocedure('gestao_lab.avaliar_alertas_estoque(bigint)') IS NOT NULL AS avaliar_alertas_estoque,
+       to_regprocedure('gestao_lab.avaliar_alertas_item_estoque(bigint)') IS NOT NULL AS avaliar_alertas_item_estoque,
+       to_regprocedure('gestao_lab.movimentar_estoque(bigint,bigint,numeric,text)') IS NOT NULL AS movimentar_estoque_legado,
+       to_regprocedure('gestao_lab.movimentar_estoque(bigint,bigint,numeric,text,text)') IS NOT NULL AS movimentar_estoque_com_finalidade,
+       to_regprocedure('gestao_lab.registrar_assinatura_rsa(bigint,bigint,bytea,bytea)') IS NOT NULL AS registrar_assinatura_rsa,
+       to_regclass('gestao_lab.chave_assinatura_usuario') IS NOT NULL AS chaves_dos_autores,
+       to_regclass('gestao_lab.recomendacao_estoque') IS NOT NULL AS recomendacoes_agente;
+
+SELECT count(*) FILTER (WHERE table_name = 'notificacao' AND column_name = 'resolvida_em') = 1 AS encerramento_de_alertas,
+       count(*) FILTER (WHERE table_name = 'movimentacao_estoque' AND column_name = 'finalidade') = 1 AS finalidade_da_movimentacao,
+       count(*) FILTER (WHERE table_name = 'protocolo' AND column_name IN ('pdf_sha256', 'pdf_politica_verificacao')) = 2 AS evidencia_pdf,
+       count(*) FILTER (WHERE table_name = 'protocolo'
+           AND column_name IN ('assinatura_rsa', 'rsa_resumo', 'rsa_modulo', 'rsa_expoente_publico')) = 4 AS evidencia_rsa
+FROM information_schema.columns
+WHERE table_schema = 'gestao_lab';
+
 SELECT EXISTS (
     SELECT 1 FROM pg_constraint c
     JOIN pg_class t ON t.oid = c.conrelid
@@ -27,3 +49,5 @@ SELECT EXISTS (
     WHERE n.nspname = 'gestao_lab' AND t.relname = 'reserva_recurso'
       AND c.conname = 'reserva_recurso_sem_sobreposicao' AND c.contype = 'x'
 ) AS exclusao_de_sobreposicao_instalada;
+
+COMMIT;

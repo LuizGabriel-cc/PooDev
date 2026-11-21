@@ -153,6 +153,43 @@ def test_copia_indisponivel_e_destinatario_inativo_nao_podem_ser_usados(sistema,
         sistema.chaves.designar(sistema.token, chave.id, usuario.id)
 
 
+def test_ocorrencia_sem_copia_compativel_avisa_chefe_e_portador(sistema, recursos, portador, periodo,
+                                                               dados_professor):
+    usuario, token = portador
+    professor = sistema.cadastro.cadastrar(sistema.token, Perfil.PROFESSOR, dados_professor)
+    principal = copia(sistema, recursos[0].id)
+    alternativa = copia(sistema, recursos[0].id, codigo="C2")
+    reserva = reservar(sistema, token, recursos[2].id, *periodo)
+
+    def avisos():
+        with psycopg.connect(sistema.url) as conn:
+            return conn.execute("""
+                SELECT n.destinatario_id, (n.referencia->>'chave_id')::bigint, e.estado::text
+                FROM gestao_lab.notificacao n
+                LEFT JOIN gestao_lab.envio_email e ON e.notificacao_id = n.id
+                WHERE n.laboratorio_id = %s AND n.tipo = 'CHAVE_INDISPONIVEL'
+                ORDER BY n.destinatario_id
+            """, (sistema.chefe.laboratorio_id,)).fetchall()
+
+    sistema.chaves.registrar_ocorrencia(sistema.token, principal.id, condicao="INDISPONIVEL",
+                                        descricao="Chave danificada com outra cópia disponível")
+    assert avisos() == []
+
+    sistema.chaves.registrar_ocorrencia(sistema.token, principal.id, condicao="OPERACIONAL",
+                                        descricao="Chave reparada")
+    sistema.chaves.designar(sistema.token, alternativa.id, professor.id)
+    sistema.chaves.registrar_ocorrencia(sistema.token, principal.id, condicao="EXTRAVIADA",
+                                        descricao="Chave extraviada e alternativa designada")
+    sistema.chaves.registrar_ocorrencia(sistema.token, principal.id, condicao="EXTRAVIADA",
+                                        descricao="Extravio conferido")
+    assert avisos() == [
+        (sistema.chefe.id, principal.id, "PENDENTE"),
+        (usuario.id, principal.id, "PENDENTE"),
+    ]
+    assert any(r["id"] == reserva.id and r["estado"] == "CONFIRMADA"
+               for r in sistema.reservas.listar(token))
+
+
 def test_devolucao_e_permitida_apos_desativacao_do_portador(sistema, recursos, portador, periodo):
     usuario, token = portador
     chave = copia(sistema, recursos[0].id)
